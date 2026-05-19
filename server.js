@@ -27,39 +27,84 @@ const PID_DIR = path.join(
 );
 const PID_FILE = path.join(PID_DIR, "server.pid");
 
-function killPreviousServer() {
+const PKG_VERSION = require("./package.json").version;
+const IS_PACKAGED = process.argv.includes("--packaged");
+const NO_AUTO_OPEN = process.argv.includes("--no-open");
+
+function parsePidFile() {
   try {
     const raw = fs.readFileSync(PID_FILE, "utf8").trim();
-    const [pidStr, portStr] = raw.split(":");
-    const oldPid = parseInt(pidStr, 10);
-    if (!isNaN(oldPid) && oldPid !== process.pid) {
-      try {
-        process.kill(oldPid, 0);
-        process.kill(oldPid, "SIGTERM");
-        logger.log("info", "server", `Killed previous server (PID ${oldPid})`);
-        // Brief pause for port release
-        const start = Date.now();
-        while (Date.now() - start < 1000) { /* spin */ }
-      } catch {
-        // Process already dead
-      }
+    if (raw.startsWith("{")) {
+      return JSON.parse(raw);
     }
+    const [pidStr, portStr] = raw.split(":");
+    return { pid: parseInt(pidStr, 10), port: parseInt(portStr, 10) };
   } catch {
-    // No PID file
+    return null;
+  }
+}
+
+function isOurProcess(pid) {
+  try {
+    const { execSync } = require("child_process");
+    const out = execSync(
+      `powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine"`,
+      { encoding: "utf8", timeout: 5000 }
+    );
+    return out.includes("server.js");
+  } catch {
+    return false;
+  }
+}
+
+function killPreviousServer() {
+  const info = parsePidFile();
+  if (!info || !info.pid || info.pid === process.pid) return;
+  try {
+    process.kill(info.pid, 0);
+    if (!isOurProcess(info.pid)) {
+      logger.log("warn", "server", `PID ${info.pid} is alive but not a DR Launcher process — skipping kill`);
+      return;
+    }
+    process.kill(info.pid, "SIGTERM");
+    logger.log("info", "server", `Killed previous server (PID ${info.pid})`);
+    const start = Date.now();
+    while (Date.now() - start < 1000) { /* spin for port release */ }
+  } catch {
+    // Process already dead
   }
 }
 
 function writePidFile(port) {
   fs.mkdirSync(PID_DIR, { recursive: true });
-  fs.writeFileSync(PID_FILE, `${process.pid}:${port}`, "utf8");
+  fs.writeFileSync(PID_FILE, JSON.stringify({
+    pid: process.pid,
+    port,
+    startedAt: new Date().toISOString(),
+    exePath: process.execPath,
+    serverJs: __filename,
+    version: PKG_VERSION,
+  }), "utf8");
 }
 
 function removePidFile() {
   try { fs.unlinkSync(PID_FILE); } catch { /* ignore */ }
 }
 
+let serverPort = null;
+
 const app = express();
 app.use(express.json());
+
+app.get("/ping", (req, res) => {
+  res.json({
+    ok: true,
+    port: serverPort,
+    pid: process.pid,
+    version: PKG_VERSION,
+    packaged: IS_PACKAGED,
+  });
+});
 
 app.use((req, res, next) => {
   const start = Date.now();
@@ -728,11 +773,13 @@ function tryListen(port, maxAttempts) {
     settings.migrateIfNeeded();
 
     const { server, port } = await tryListen(3456, 3);
+    serverPort = port;
     writePidFile(port);
 
     const url = `http://127.0.0.1:${port}`;
-    logger.log("info", "server", `DR Launcher running at ${url} (PID ${process.pid})`);
+    logger.log("info", "server", `DR Launcher v${PKG_VERSION} running at ${url} (PID ${process.pid})`);
     logger.log("info", "server", `Workspace root: ${workspace.WORKSPACE_ROOT}`);
+    if (IS_PACKAGED) logger.log("info", "server", `Packaged mode — install path: ${__dirname}`);
     logger.log("info", "server", "API token: [redacted]");
 
     // Clear stale sessions from previous server runs
@@ -756,9 +803,24 @@ function tryListen(port, maxAttempts) {
     process.on("SIGTERM", () => shutdown("SIGTERM"));
     process.on("exit", removePidFile);
 
-    exec(`start "" "${url}"`, (err) => {
-      if (err) logger.log("warn", "server", `Could not auto-open browser: ${err.message}`);
-    });
+    // System tray icon (optional — works without it in dev mode)
+    try {
+      const tray = require("./lib/tray");
+      const icoCandidates = [
+        path.join(__dirname, "..", "dr-launcher.ico"),
+        path.join(__dirname, "packaging", "dr-launcher.ico"),
+      ];
+      const icoPath = icoCandidates.find((p) => fs.existsSync(p)) || null;
+      tray.initTray({ port, iconPath: icoPath, onQuit: () => shutdown("TRAY_QUIT") });
+    } catch (err) {
+      logger.log("warn", "server", `Tray icon unavailable: ${err.message}`);
+    }
+
+    if (!NO_AUTO_OPEN) {
+      exec(`start "" "${url}"`, (err) => {
+        if (err) logger.log("warn", "server", `Could not auto-open browser: ${err.message}`);
+      });
+    }
   } catch (err) {
     logger.log("error", "server", `Failed to start server: ${err.message}`);
     process.exit(1);

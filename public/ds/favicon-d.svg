@@ -1,8 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" fill="none">
-  
-  <g transform="translate(12,14)">
-    <path d="M 10 26 A 16 16 0 0 1 26 10" stroke="#FFA310" stroke-width="7" stroke-linecap="round" fill="none"></path>
-    <path d="M 30 -4 L 30 48" stroke="#0C142B" stroke-width="7" stroke-linecap="round"></path>
-    <path d="M 30 10 A 16 16 0 1 1 14 26" stroke="#0C142B" stroke-width="7" stroke-linecap="round" fill="none"></path>
-  </g>
+  <text x="50%" y="54" text-anchor="middle" dominant-baseline="central"
+        font-family="Inter, -apple-system, system-ui, sans-serif"
+        font-weight="700" font-size="60" fill="#0C142B">L</text>
 </svg>

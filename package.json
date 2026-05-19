@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "build": "powershell -ExecutionPolicy Bypass -File packaging/build.ps1"
   },
   "dependencies": {
     "@azure/msal-node": "^5.2.1",

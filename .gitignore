@@ -6,3 +6,10 @@ auth-config.json
 .env
 .env.*
 *.tmp
+
+# Build artifacts
+packaging/dist/
+packaging/output/
+packaging/.cache/
+packaging/DR-Launcher.exe
+packaging/test-install/
