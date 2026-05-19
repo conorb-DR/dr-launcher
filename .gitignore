@@ -1,0 +1,8 @@
+node_modules/
+profiles.json
+.cache/
+*.log
+auth-config.json
+.env
+.env.*
+*.tmp
