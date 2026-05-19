@@ -16,6 +16,10 @@ const preferences = require("./lib/preferences");
 const history = require("./lib/history");
 const cloud = require("./lib/cloud");
 const sync = require("./lib/sync");
+const servers = require("./lib/servers");
+const logger = require("./lib/log");
+const artifacts = require("./lib/artifacts");
+const cleanup = require("./lib/cleanup");
 
 const PID_DIR = path.join(
   process.env.LOCALAPPDATA || path.join(require("os").homedir(), "AppData", "Local"),
@@ -32,7 +36,7 @@ function killPreviousServer() {
       try {
         process.kill(oldPid, 0);
         process.kill(oldPid, "SIGTERM");
-        console.log(`Killed previous server (PID ${oldPid})`);
+        logger.log("info", "server", `Killed previous server (PID ${oldPid})`);
         // Brief pause for port release
         const start = Date.now();
         while (Date.now() - start < 1000) { /* spin */ }
@@ -57,6 +61,14 @@ function removePidFile() {
 const app = express();
 app.use(express.json());
 
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", () => {
+    logger.log("info", "http", `${req.method} ${req.path} ${res.statusCode}`, { ms: Date.now() - start });
+  });
+  next();
+});
+
 const TERMINAL_TITLE_HOLD_SECONDS = 15;
 
 // Live launch progress — SSE subscribers + step tracking.
@@ -72,6 +84,7 @@ function emitProgress(data) {
 
 // --- API token protection ---
 const API_TOKEN = crypto.randomBytes(24).toString("hex");
+let healthChecksCache = null;
 
 function requireToken(req, res, next) {
   const token = req.headers["x-dr-launcher-token"];
@@ -204,11 +217,15 @@ app.get("/api/health", requireToken, async (req, res) => {
   }
 
   const chromeInfo = chrome.chromeAvailable();
-  const vdCheck = await virtualDesktop.checkAvailability();
+  const vdTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("VD check timed out")), 5000));
+  let vdCheck;
+  try {
+    vdCheck = await Promise.race([virtualDesktop.checkAvailability(), vdTimeout]);
+  } catch {
+    vdCheck = { ok: false, error: "check_timed_out" };
+  }
 
-  res.json({
-    status: "ok",
-    checks: {
+  const checks = {
       dr: { found: drCli.hasDrCli() },
       chrome: { found: chromeInfo.available, path: chromeInfo.path },
       claude: { found: workspace.hasClaudeCli() },
@@ -225,9 +242,62 @@ app.get("/api/health", requireToken, async (req, res) => {
         desktopCount: vdCheck.desktopCount || null,
         error: vdCheck.error || null,
       },
-    },
-    servers: drCli.serverKeys(),
+    };
+  healthChecksCache = checks;
+
+  res.json({
+    status: "ok",
+    checks,
+    servers: servers.getServerList().map((s) => s.key),
   });
+});
+
+// Server list with full metadata
+app.get("/api/servers", requireToken, (req, res) => {
+  res.json({ servers: servers.getServerList() });
+});
+
+// Log + diagnostics endpoints
+app.get("/api/logs", requireToken, (req, res) => {
+  const count = parseInt(req.query.count, 10) || 50;
+  res.json({ entries: logger.getEntries(count) });
+});
+
+app.get("/api/diagnostics", requireToken, (req, res) => {
+  res.json({ text: logger.getDiagnosticText(healthChecksCache) });
+});
+
+// Cleanup — scan orphaned profiles/workspaces
+app.get("/api/cleanup/scan", requireToken, (req, res) => {
+  try {
+    const maxAge = parseInt(req.query.maxAge) || 30;
+    const result = cleanup.scanOrphaned(maxAge);
+    res.json(result);
+  } catch (err) {
+    logger.log("error", "cleanup", `Scan failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/cleanup/purge", requireToken, (req, res) => {
+  try {
+    const { profiles = [], workspaces = [] } = req.body;
+    const result = {};
+    if (profiles.length > 0) {
+      result.profiles = cleanup.purgeProfiles(profiles);
+    }
+    if (workspaces.length > 0) {
+      result.workspaces = cleanup.quarantineWorkspaces(workspaces);
+    }
+    logger.log("info", "cleanup", "Purge completed", {
+      profilesDeleted: result.profiles?.deleted?.length || 0,
+      workspacesQuarantined: result.workspaces?.quarantined?.length || 0,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    logger.log("error", "cleanup", `Purge failed: ${err.message}`);
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // Settings (returns machine-local + preferences merged)
@@ -249,6 +319,7 @@ app.post("/api/settings", requireToken, (req, res) => {
 // Discover all authenticated accounts
 app.get("/api/accounts", requireToken, async (req, res) => {
   try {
+    if (req.query.force === "1") drCli.invalidateAccountsCache();
     const accounts = await drCli.discoverAccounts();
     res.json({ accounts });
   } catch (err) {
@@ -321,7 +392,7 @@ app.get("/api/sync/status", requireToken, (req, res) => {
 // Sessions
 app.get("/api/sessions", requireToken, (req, res) => {
   sessions.pruneEndedSessions();
-  res.json({ sessions: sessions.getSessions() });
+  res.json({ sessions: sessions.getVisibleSessions() });
 });
 
 app.post("/api/sessions/close", requireToken, async (req, res) => {
@@ -329,6 +400,17 @@ app.post("/api/sessions/close", requireToken, async (req, res) => {
   if (!sessionId) return res.status(400).json({ error: "Missing sessionId" });
   try {
     const result = await sessions.closeSession(sessionId);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/sessions/force-close", requireToken, async (req, res) => {
+  const { sessionId } = req.body;
+  if (!sessionId) return res.status(400).json({ error: "Missing sessionId" });
+  try {
+    const result = await sessions.forceCloseSession(sessionId);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -385,6 +467,13 @@ app.post("/api/launch", requireToken, async (req, res) => {
     return res.status(400).json({ error: err.message });
   }
 
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return res.status(400).json({ error: "Invalid email format" });
+  }
+  if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/i.test(orgDomain)) {
+    return res.status(400).json({ error: "Invalid orgDomain format" });
+  }
+
   // Block duplicate active sessions
   const existingSession = sessions.getSessionByAccountId(id);
   if (existingSession) {
@@ -400,6 +489,7 @@ app.post("/api/launch", requireToken, async (req, res) => {
   }
 
   const launchId = virtualDesktop.generateLaunchId();
+  logger.log("info", "launch", "Starting launch", { launchId, accountId: id, serverKey, orgDomain });
   const account = { email, serverKey, serverHost, orgDomain, orgId };
   const userSettings = settings.getSettings();
   const useVD = userSettings.useVirtualDesktops;
@@ -433,6 +523,7 @@ app.post("/api/launch", requireToken, async (req, res) => {
     } catch (err) {
       result.workspace = { ok: false, error: err.message };
     }
+    logger.log("info", "launch", `Workspace: ${result.workspace.ok ? "ok" : "failed"}`, { launchId });
 
     // 2. Snapshot windows BEFORE launching (if VD enabled)
     emit(2, "Snapshotting windows");
@@ -453,6 +544,7 @@ app.post("/api/launch", requireToken, async (req, res) => {
     } catch (err) {
       result.chrome = { ok: false, error: err.message };
     }
+    logger.log("info", "launch", `Chrome: ${result.chrome.ok ? "ok" : "failed"}`, { launchId, pid: result.chrome.pid });
 
     // 4. Launch Terminal (with transaction ID title)
     emit(4, "Opening Claude Code");
@@ -469,6 +561,7 @@ app.post("/api/launch", requireToken, async (req, res) => {
     } else {
       result.terminal = { ok: false, error: "Skipped - workspace creation failed" };
     }
+    logger.log("info", "launch", `Terminal: ${result.terminal.ok ? "ok" : "failed"}`, { launchId });
 
     // 5. Virtual desktop (if enabled and available)
     if (useVD) emit(5, "Setting up virtual desktop");
@@ -500,6 +593,7 @@ app.post("/api/launch", requireToken, async (req, res) => {
       };
     }
 
+    logger.log("info", "launch", `VD: ${result.virtualDesktop?.ok ? "ok" : "skipped/failed"}`, { launchId });
     emitProgress({ launchId, orgDomain, serverKey, step: totalSteps, totalSteps, label: "Done", done: true });
 
     // Register session if at least one surface opened
@@ -524,8 +618,10 @@ app.post("/api/launch", requireToken, async (req, res) => {
         terminalOk: result.terminal.ok === true,
       });
       if (!regResult.ok) {
-        console.error(`[session] Registration failed for ${orgDomain}: ${regResult.error}`);
+        logger.log("error", "session", `Registration failed for ${orgDomain}: ${regResult.error}`);
         result.sessionError = regResult.error;
+      } else {
+        logger.log("info", "launch", "Session registered", { launchId, sessionError: null });
       }
       const historyEntry = {
         launchId,
@@ -537,6 +633,17 @@ app.post("/api/launch", requireToken, async (req, res) => {
       };
       history.addEntry(historyEntry);
       sync.pushHistoryEntry(historyEntry);
+      drCli.invalidateAccountsCache();
+      artifacts.recordLaunch({
+        accountId: id,
+        serverKey,
+        orgDomain,
+        orgId: orgId || null,
+        workspaceSlug: result.workspace?.slug || null,
+        workspacePath: result.workspace?.path || null,
+        profileSlug: result.chrome?.profilePath ? path.basename(result.chrome.profilePath) : null,
+        profilePath: result.chrome?.profilePath || null,
+      });
     }
 
     res.json(result);
@@ -578,6 +685,20 @@ app.post("/api/login", requireToken, (req, res) => {
   }
 });
 
+// Open a workspace folder in Explorer
+app.post("/api/open-folder", requireToken, (req, res) => {
+  const { folderPath } = req.body;
+  if (!folderPath || !folderPath.toLowerCase().startsWith(workspace.WORKSPACE_ROOT.toLowerCase())) {
+    return res.status(400).json({ error: "Invalid path" });
+  }
+  try {
+    exec(`explorer "${folderPath}"`);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Start server ---
 function tryListen(port, maxAttempts) {
   return new Promise((resolve, reject) => {
@@ -602,6 +723,7 @@ function tryListen(port, maxAttempts) {
 
 (async () => {
   try {
+    logger.installGlobalHandlers();
     killPreviousServer();
     settings.migrateIfNeeded();
 
@@ -609,23 +731,23 @@ function tryListen(port, maxAttempts) {
     writePidFile(port);
 
     const url = `http://127.0.0.1:${port}`;
-    console.log(`DR Launcher running at ${url} (PID ${process.pid})`);
-    console.log(`Workspace root: ${workspace.WORKSPACE_ROOT}`);
-    console.log(`API token: ${API_TOKEN.slice(0, 8)}...`);
+    logger.log("info", "server", `DR Launcher running at ${url} (PID ${process.pid})`);
+    logger.log("info", "server", `Workspace root: ${workspace.WORKSPACE_ROOT}`);
+    logger.log("info", "server", "API token: [redacted]");
 
     // Clear stale sessions from previous server runs
-    const stale = sessions.clearStaleSessions();
+    const stale = sessions.clearPreviousRunSessions();
     if (stale.cleared > 0) {
-      console.log(`Cleared ${stale.cleared} stale session(s) from previous run`);
+      logger.log("info", "server", `Cleared ${stale.cleared} stale session(s) from previous run`);
     }
 
     // Pre-check virtual desktop availability
     const vdStatus = await virtualDesktop.checkAvailability();
-    console.log(`Virtual desktops: ${vdStatus.ok ? "available" : "unavailable"}${vdStatus.error ? ` (${vdStatus.error})` : ""}`);
+    logger.log("info", "server", `Virtual desktops: ${vdStatus.ok ? "available" : "unavailable"}${vdStatus.error ? ` (${vdStatus.error})` : ""}`);
 
     // Graceful shutdown
     function shutdown(signal) {
-      console.log(`\n${signal} received — shutting down`);
+      logger.log("info", "server", `${signal} received — shutting down`);
       removePidFile();
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(0), 3000);
@@ -635,10 +757,10 @@ function tryListen(port, maxAttempts) {
     process.on("exit", removePidFile);
 
     exec(`start "" "${url}"`, (err) => {
-      if (err) console.log("Could not auto-open browser:", err.message);
+      if (err) logger.log("warn", "server", `Could not auto-open browser: ${err.message}`);
     });
   } catch (err) {
-    console.error("Failed to start server:", err.message);
+    logger.log("error", "server", `Failed to start server: ${err.message}`);
     process.exit(1);
   }
 })();

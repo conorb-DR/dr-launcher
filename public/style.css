@@ -1130,6 +1130,50 @@ button, input { font-family: inherit; }
 @keyframes dr-toast-out {
   to { transform: translateY(8px); opacity: 0; }
 }
+.toast__action {
+  background: none;
+  border: none;
+  color: var(--dr-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  padding: 2px 4px;
+  flex-shrink: 0;
+}
+.toast__action:hover { opacity: 0.8; }
+
+/* ── Launch error cards ──────────────────────────────────────────── */
+.launch-error-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  background: var(--dr-error-bg, #FFF0F0);
+  border: 1px solid var(--dr-error-fg, #D32F2F);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.launch-error-card__body { flex: 1; min-width: 0; }
+.launch-error-card__body strong { display: block; margin-bottom: 2px; }
+.launch-error-card__detail {
+  color: var(--dr-text-secondary);
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+}
+.launch-error-card__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+[data-theme="dark"] .launch-error-card {
+  background: rgba(211, 47, 47, 0.10);
+  border-color: rgba(211, 47, 47, 0.4);
+}
 
 /* ── Batch list (inline in batch bar) ──────────────────────────── */
 .batch-bar__top {
@@ -1215,8 +1259,38 @@ button, input { font-family: inherit; }
   color: #03A678;
   font-weight: 600;
 }
+.session-dot--stale {
+  background: #E5960A;
+}
 .tbl__row.has-session {
   background: rgba(3,166,120,0.03);
+}
+.tbl__row.is-stale {
+  background: rgba(229,150,10,0.05);
+}
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.badge--stale {
+  background: rgba(229,150,10,0.15);
+  color: #9E5F00;
+}
+.btn--warn {
+  cursor: pointer;
+  background: rgba(229,150,10,0.12);
+  color: #9E5F00;
+  border: 1px solid rgba(229,150,10,0.3);
+  border-radius: 6px;
+}
+.btn--warn:hover {
+  background: #E5960A;
+  color: var(--dr-white);
 }
 .btn--danger { cursor: pointer; }
 .btn--danger:hover {
@@ -1404,6 +1478,26 @@ button, input { font-family: inherit; }
   background: rgba(0,230,118,0.15);
   color: #00E676;
 }
+[data-theme="dark"] .session-dot--stale {
+  background: #FFB300;
+  border-color: var(--dr-bg-surface);
+}
+[data-theme="dark"] .badge--stale {
+  background: rgba(255,179,0,0.18);
+  color: #FFB300;
+}
+[data-theme="dark"] .tbl__row.is-stale {
+  background: rgba(255,179,0,0.05);
+}
+[data-theme="dark"] .btn--warn {
+  background: rgba(255,179,0,0.15);
+  color: #FFB300;
+  border-color: rgba(255,179,0,0.3);
+}
+[data-theme="dark"] .btn--warn:hover {
+  background: #FFB300;
+  color: #000;
+}
 [data-theme="dark"] .tbl__row.has-session {
   background: rgba(0,230,118,0.04);
 }
@@ -1524,4 +1618,73 @@ button, input { font-family: inherit; }
 
 [data-theme="dark"] .login-card {
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* ── Skeleton loading rows ──────────────────────────────────────── */
+.skel {
+  display: inline-block;
+  height: 14px;
+  border-radius: 4px;
+  background: var(--dr-gray-100);
+  animation: shimmer 1.5s infinite;
+}
+.skel--circle { width: 32px; height: 32px; border-radius: 50%; }
+.skel--pill { width: 48px; height: 22px; border-radius: 11px; }
+.skel--text { height: 12px; }
+.tbl__row.is-skeleton { pointer-events: none; }
+@keyframes shimmer {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+[data-theme="dark"] .skel { background: rgba(255,255,255,0.08); }
+
+/* ── Dropdown menus ─────────────────────────────────────────────── */
+.dropdown-menu {
+  position: absolute;
+  z-index: 200;
+  background: var(--dr-white);
+  border: 1px solid var(--dr-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  min-width: 180px;
+  padding: 4px 0;
+}
+.dropdown-menu__item {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+  background: none;
+  text-align: left;
+  color: var(--dr-text-body);
+  font-family: var(--dr-font-sans);
+}
+.dropdown-menu__item:hover { background: var(--dr-bg-hover); }
+.dropdown-menu__sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--dr-border);
+}
+[data-theme="dark"] .dropdown-menu {
+  background: var(--dr-bg-surface);
+  border-color: rgba(255,255,255,0.1);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+[data-theme="dark"] .dropdown-menu__item { color: var(--dr-text-body); }
+[data-theme="dark"] .dropdown-menu__item:hover { background: var(--dr-bg-hover); }
+[data-theme="dark"] .dropdown-menu__sep { background: rgba(255,255,255,0.08); }
+
+/* ── Filter/sort chip active state ──────────────────────────────── */
+.chip.has-filter {
+  background: var(--dr-indigo-50);
+  color: var(--dr-indigo-600);
+  border-color: var(--dr-indigo-200);
+}
+[data-theme="dark"] .chip.has-filter {
+  background: rgba(99,102,241,0.15);
+  color: #A5B4FC;
+  border-color: rgba(99,102,241,0.3);
 }

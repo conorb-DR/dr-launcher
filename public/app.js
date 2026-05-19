@@ -38,22 +38,28 @@ let prereqWarningDismissed = false; // session-only dismissal of warning banner
 let batchCloseInProgress = false;  // true during batch close operation
 let batchCloseProgress = null;     // { total, current } when running
 let authState = { configured: false, authenticated: false, user: null };
+let launchErrors = [];
+let sortMode = "lastUsed";   // "lastUsed" | "az" | "server"
+let lastRefreshedAt = null;
 
-// ── Server metadata ──────────────────────────────────────────────
-const SERVERS = [
-  { key: "US",  label: "app.datarails.com",      color: "#4646CE", soft: "#DFD9FF", text: "#25258C" },
-  { key: "US2", label: "us-2.datarails.com",     color: "#7B61FF", soft: "#F0EEFF", text: "#5D45D6" },
-  { key: "UK",  label: "ukapp.datarails.com",    color: "#03A678", soft: "#ECFAE4", text: "#037C5A" },
-  { key: "CA",  label: "caapp.datarails.com",    color: "#FFA310", soft: "#FFF4D4", text: "#9E5F00" },
+// ── Server metadata (fetched from API, bundled fallback for first paint) ─────
+let serverList = [
+  { key: "US",  label: "app.datarails.com",      color: "#4646CE", soft: "#DFD9FF", text: "#25258C", region: "United States" },
+  { key: "US2", label: "us-2.datarails.com",     color: "#7B61FF", soft: "#F0EEFF", text: "#5D45D6", region: "United States (instance 2)" },
+  { key: "UK",  label: "ukapp.datarails.com",    color: "#03A678", soft: "#ECFAE4", text: "#037C5A", region: "United Kingdom" },
+  { key: "CA",  label: "caapp.datarails.com",    color: "#FFA310", soft: "#FFF4D4", text: "#9E5F00", region: "Canada" },
 ];
-const SERVER_REGION = {
-  US:  "United States",
-  US2: "United States (instance 2)",
-  UK:  "United Kingdom",
-  CA:  "Canada",
-};
 function serverInfo(key) {
-  return SERVERS.find((s) => s.key === key) || { key, label: "", color: "#9EA1AA", soft: "#F0F1F4", text: "#4E566C" };
+  return serverList.find((s) => s.key === key) || { key, label: "", color: "#9EA1AA", soft: "#F0F1F4", text: "#4E566C", region: key };
+}
+async function fetchServers() {
+  try {
+    const res = await fetch("/api/servers", { headers });
+    const data = await res.json();
+    if (Array.isArray(data.servers) && data.servers.length > 0) {
+      serverList = data.servers;
+    }
+  } catch { /* keep fallback */ }
 }
 
 // ── Auth API ─────────────────────────────────────────────────────
@@ -218,11 +224,12 @@ async function triggerDevLogin() {
 }
 
 // ── API calls (unchanged behaviour from original) ────────────────
-async function fetchAccounts() {
-  loading = true;
-  render();
+async function fetchAccounts(force) {
+  loading = accounts.length === 0;
+  if (loading) render();
   try {
-    const res = await fetch("/api/accounts", { headers });
+    const url = force ? "/api/accounts?force=1" : "/api/accounts";
+    const res = await fetch(url, { headers });
     const data = await res.json();
     accounts = data.accounts || [];
   } catch (err) {
@@ -230,6 +237,7 @@ async function fetchAccounts() {
     accounts = [];
   }
   loading = false;
+  lastRefreshedAt = new Date();
   render();
 }
 
@@ -286,7 +294,7 @@ async function fetchSessions() {
   try {
     const res = await fetch("/api/sessions", { headers });
     const data = await res.json();
-    activeSessions = (data.sessions || []).filter((s) => s.status === "active");
+    activeSessions = (data.sessions || []).filter((s) => s.status === "active" || s.status === "stale");
   } catch {
     activeSessions = [];
   }
@@ -308,39 +316,76 @@ async function closeSessionRequest(sessionId, orgDomain) {
       body: JSON.stringify({ sessionId }),
     });
     const data = await res.json();
+    if (!data.ok) {
+      showToast(`Failed to close session: ${data.error || "Unknown error"}`, "error", {
+        action: { label: "Force close", fn: () => forceCloseRequest(sessionId, orgDomain) },
+      });
+      await fetchSessions();
+      render();
+      return false;
+    }
+    showToast(`Session closed for ${orgDomain}.`);
+    await fetchSessions();
+    render();
+    return true;
+  } catch (err) {
+    showToast("Failed to close session: " + err.message, "error", {
+      action: { label: "Force close", fn: () => forceCloseRequest(sessionId, orgDomain) },
+    });
+    await fetchSessions();
+    render();
+    return false;
+  }
+}
+
+async function forceCloseRequest(sessionId, orgDomain) {
+  try {
+    const res = await fetch("/api/sessions/force-close", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sessionId }),
+    });
+    const data = await res.json();
     if (data.ok) {
-      showToast(`Session closed for ${orgDomain}.`);
+      showToast(`Session force-closed for ${orgDomain}.`);
     } else {
-      showToast(`Failed to close session: ${data.error || "Unknown error"}`, "error");
+      showToast(`Force close failed: ${data.error || "Unknown error"}`, "error");
     }
   } catch (err) {
-    showToast("Failed to close session: " + err.message, "error");
+    showToast("Force close failed: " + err.message, "error");
   }
   await fetchSessions();
   render();
 }
 
-function showCloseConfirmation(sessionId, orgDomain) {
+function showCloseConfirmation(sessionId, orgDomain, isStale = false) {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   overlay.innerHTML = `
     <div class="modal" style="width:440px">
       <div class="modal__head">
         <div>
-          <h2>Close session?</h2>
-          <p>This will close Chrome, the terminal, and remove the virtual desktop for <strong>${esc(orgDomain)}</strong>.</p>
+          <h2>${isStale ? "Force close stale session?" : "Close session?"}</h2>
+          <p>${isStale
+            ? `The session for <strong>${esc(orgDomain)}</strong> appears stale (processes may have exited). Force close will clean up the session record.`
+            : `This will close Chrome, the terminal, and remove the virtual desktop for <strong>${esc(orgDomain)}</strong>.`
+          }</p>
         </div>
         <button class="modal__close" aria-label="Close">${ICON.x}</button>
       </div>
       <div class="modal__foot">
         <button class="btn btn--ghost" data-modal-close>Cancel</button>
-        <button class="btn btn--danger" id="confirm-close-session">Close session</button>
+        <button class="btn ${isStale ? "btn--warn" : "btn--danger"}" id="confirm-close-session">${isStale ? "Force close" : "Close session"}</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
   overlay.querySelector("#confirm-close-session").addEventListener("click", () => {
     closeModal();
-    closeSessionRequest(sessionId, orgDomain);
+    if (isStale) {
+      forceCloseRequest(sessionId, orgDomain);
+    } else {
+      closeSessionRequest(sessionId, orgDomain);
+    }
   });
   wireModalClose(overlay);
 }
@@ -450,6 +495,11 @@ function filterAccounts(list) {
       serverInfo(a.serverKey).label.toLowerCase().includes(q)
     );
   }
+  if (sortMode === "az") {
+    out.sort((a, b) => (a.orgDomain || "").localeCompare(b.orgDomain || ""));
+  } else if (sortMode === "server") {
+    out.sort((a, b) => (a.serverKey || "").localeCompare(b.serverKey || "") || (a.orgDomain || "").localeCompare(b.orgDomain || ""));
+  }
   return out;
 }
 
@@ -521,7 +571,14 @@ async function launchCustomer(account, opts = {}) {
   const quiet = opts.quiet || false;
   const activeSession = activeSessions.find((s) => s.accountId === account.id);
   if (activeSession) {
-    if (!quiet) showToast(`Session already active for ${account.orgDomain} — close it first.`, "warn");
+    if (!quiet) showToast(
+      `Session already active for ${account.orgDomain} — close it first.`,
+      "warn",
+      { persistent: true, action: { label: "Close it", fn: async () => {
+        const closed = await closeSessionRequest(activeSession.sessionId, account.orgDomain);
+        if (closed) showToast("Session closed. You can re-launch now.");
+      }}}
+    );
     return { ok: false, account, error: "active_session_exists" };
   }
   if (launchInProgress) {
@@ -545,7 +602,16 @@ async function launchCustomer(account, opts = {}) {
     if (res.status === 409) {
       const errData = await res.json().catch(() => ({}));
       if (errData.error === "active_session_exists") {
-        if (!quiet) showToast(errData.message || `Active session exists for ${account.orgDomain}.`, "warn");
+        const serverSession = activeSessions.find((s) => s.accountId === account.id);
+        if (!quiet) {
+          const toastOpts = serverSession
+            ? { persistent: true, action: { label: "Close it", fn: async () => {
+                const closed = await closeSessionRequest(serverSession.sessionId, account.orgDomain);
+                if (closed) showToast("Session closed. You can re-launch now.");
+              }}}
+            : {};
+          showToast(errData.message || `Active session exists for ${account.orgDomain}.`, "warn", toastOpts);
+        }
         return { ok: false, account, error: "active_session_exists" };
       }
       if (!quiet) showToast("Another launch is in progress. Please wait.", "warn");
@@ -556,6 +622,10 @@ async function launchCustomer(account, opts = {}) {
     if (!res.ok) {
       showToast("Launch failed: " + (data.error || "Unknown error"), "error");
       return { ok: false, account, error: data.error || "Unknown error" };
+    }
+
+    if (data.sessionError) {
+      showToast(`Session tracking failed: ${data.sessionError}`, "warn");
     }
 
     if (!quiet) {
@@ -596,6 +666,20 @@ async function launchCustomer(account, opts = {}) {
       }
     }
 
+    if (data.chrome?.ok === false || data.terminal?.ok === false) {
+      launchErrors = launchErrors.filter((e) => e.accountId !== account.id);
+      launchErrors.push({
+        launchId: data.launchId || Date.now().toString(),
+        accountId: account.id,
+        orgDomain: account.orgDomain,
+        chromeError: data.chrome?.ok === false ? (data.chrome.error || "Failed") : null,
+        terminalError: data.terminal?.ok === false ? (data.terminal.error || "Failed") : null,
+        at: new Date().toISOString(),
+      });
+    } else {
+      launchErrors = launchErrors.filter((e) => e.accountId !== account.id);
+    }
+
     const desktopName = data.virtualDesktop?.desktopName || null;
     recentLaunches = recentLaunches.filter((r) => r.accountId !== account.id);
     recentLaunches.unshift({
@@ -607,6 +691,13 @@ async function launchCustomer(account, opts = {}) {
     });
     if (recentLaunches.length > 10) recentLaunches.length = 10;
     saveRecents();
+
+    const firstLaunchKey = `dr-first-launch-v1:${authState?.user?.id || "anon"}`;
+    if (!localStorage.getItem(firstLaunchKey)) {
+      showFirstLaunchModal(data);
+      localStorage.setItem(firstLaunchKey, new Date().toISOString());
+    }
+
     await fetchSessions();
     return { ok: true, account, desktopName };
   } catch (err) {
@@ -649,11 +740,23 @@ async function launchBatchQueue() {
     } catch { /* best-effort */ }
   }
   const succeeded = results.filter((r) => r.ok).length;
+  const failed = results.filter((r) => !r.ok && r.account);
   const total = ids.length;
   if (succeeded === total) {
     showToast(`Batch complete — ${total} customer${total === 1 ? "" : "s"} launched.`, null, { persistent: true });
+  } else if (failed.length > 0) {
+    showToast(
+      `${failed.length} of ${total} launches failed.`,
+      "warn",
+      { persistent: true, action: { label: "Retry failed", fn: () => {
+        const retryIds = failed.map((r) => r.account.id);
+        batchOrder = retryIds;
+        selectedIds = new Set(retryIds);
+        launchBatchQueue();
+      }}}
+    );
   } else {
-    showToast(`Batch done — ${succeeded} of ${total} launched (${total - succeeded} failed).`, "warn", { persistent: true });
+    showToast(`Batch done — ${succeeded} of ${total} launched.`, "warn", { persistent: true });
   }
   render();
 }
@@ -879,7 +982,7 @@ function renderSidebar() {
     <div class="sidebar__section">
       <div class="sidebar__label">Servers</div>
       <div class="sidebar__items">
-        ${SERVERS.map((s) => {
+        ${serverList.map((s) => {
           const n = accounts.filter((a) => a.serverKey === s.key).length;
           const dot = `<span class="server-pill__dot" style="background:${s.color}"></span>`;
           const active = filterServer === s.key;
@@ -937,17 +1040,48 @@ function renderSidebar() {
 }
 
 
+function timeAgo(date) {
+  if (!date) return "loading…";
+  const s = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (s < 10) return "just now";
+  if (s < 60) return `${s}s ago`;
+  return `${Math.floor(s / 60)}m ago`;
+}
+
+function renderSkeleton() {
+  return `
+    <div class="crumbs"><a href="#">Home</a><span class="sep">/</span><span class="is-current">All customers</span></div>
+    <div class="page-head"><div><h1>All customers</h1><div class="sub">Loading…</div></div></div>
+    <div class="panel">
+      <div class="tbl__header">
+        <div></div><div></div>
+        <div class="tbl__sortable">Customer</div>
+        <div>Account</div>
+        <div>Server</div>
+        <div>Last used</div>
+        <div style="text-align:right">Actions</div>
+      </div>
+      ${Array.from({ length: 6 }, () => `
+        <div class="tbl__row is-skeleton" style="padding:10px 18px">
+          <div></div>
+          <div><span class="skel skel--circle"></span></div>
+          <div><span class="skel skel--text" style="width:${120 + Math.random() * 60}px"></span></div>
+          <div><span class="skel skel--text" style="width:${80 + Math.random() * 60}px"></span></div>
+          <div><span class="skel skel--pill"></span></div>
+          <div><span class="skel skel--text" style="width:60px"></span></div>
+          <div></div>
+        </div>
+      `).join("")}
+    </div>`;
+}
+
 // ── Main render ───────────────────────────────────────────────────
 function render() {
   renderSidebar();
   const main = document.getElementById("main-content");
 
   if (loading) {
-    main.innerHTML = `
-      <div class="loading">
-        <div class="spinner"></div>
-        <div>Discovering authenticated customers…</div>
-      </div>`;
+    main.innerHTML = renderSkeleton();
     return;
   }
 
@@ -975,7 +1109,7 @@ function render() {
   }
 
   const filtered = filterAccounts(accounts);
-  const groups = SERVERS
+  const groups = serverList
     .map((s) => ({ s, rows: filtered.filter((a) => a.serverKey === s.key) }))
     .filter((g) => g.rows.length);
 
@@ -996,6 +1130,21 @@ function render() {
     </div>
 
     ${warningHtml}
+    ${launchErrors.map((err) => `
+      <div class="launch-error-card">
+        <div class="launch-error-card__body">
+          <strong>Launch partially failed for ${esc(err.orgDomain)}</strong>
+          <div class="launch-error-card__detail">
+            ${err.chromeError ? `<span>Chrome: ${esc(err.chromeError)}</span>` : ""}
+            ${err.terminalError ? `<span>Terminal: ${esc(err.terminalError)}</span>` : ""}
+          </div>
+        </div>
+        <div class="launch-error-card__actions">
+          <button class="btn btn--sm btn--primary" data-retry-launch="${esc(err.accountId)}">Retry</button>
+          <button class="btn btn--sm btn--ghost" data-dismiss-error="${esc(err.accountId)}">Dismiss</button>
+        </div>
+      </div>
+    `).join("")}
 
     <div class="page-head">
       <div>
@@ -1003,7 +1152,7 @@ function render() {
         <div class="sub">${viewMode === "sessions" && filtered.length === 0 ? "No active sessions — launch a customer to get started"
           : viewMode === "recent" && filtered.length === 0 ? "Launch a customer to see them here"
           : viewMode === "favorites" && filtered.length === 0 ? "Star a customer to add them to favorites"
-          : `${groups.length} server${groups.length === 1 ? "" : "s"} · last refreshed ${new Date().toLocaleTimeString()}`}</div>
+          : `${groups.length} server${groups.length === 1 ? "" : "s"} · last refreshed ${timeAgo(lastRefreshedAt)}`}</div>
       </div>
       <div class="page-head__actions">
         <button class="btn btn--ghost" id="head-refresh">${ICON.refresh} Refresh</button>
@@ -1061,8 +1210,8 @@ function render() {
       <button class="chip ${filterServer === null ? "is-active" : ""}" data-filter="">
         All <span class="chip__count">${accounts.length}</span>
       </button>
-      <button class="chip">${ICON.filter} Filter</button>
-      <button class="chip">Sort: Last used ${ICON.chev}</button>
+      <button class="chip" id="filter-chip">${ICON.filter} Filter</button>
+      <button class="chip" id="sort-chip">Sort: ${sortMode === "az" ? "A–Z" : sortMode === "server" ? "Server" : "Last used"} ${ICON.chev}</button>
       <span class="grow">${filtered.length} of ${accounts.length}</span>
     </div>
 
@@ -1085,8 +1234,26 @@ function render() {
   `;
 
   // Wire up actions.
-  main.querySelector("#head-refresh")?.addEventListener("click", fetchAccounts);
+  main.querySelector("#head-refresh")?.addEventListener("click", () => fetchAccounts(true));
+  main.querySelector("#filter-chip")?.addEventListener("click", (e) => showFilterDropdown(e.currentTarget, e));
+  main.querySelector("#sort-chip")?.addEventListener("click", (e) => showSortDropdown(e.currentTarget, e));
   main.querySelector("#head-auth")?.addEventListener("click", showAuthModal);
+  main.querySelectorAll("[data-retry-launch]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const acct = accounts.find((a) => a.id === btn.dataset.retryLaunch);
+      if (!acct) return;
+      const session = activeSessions.find((s) => s.accountId === acct.id);
+      if (session) await closeSessionRequest(session.sessionId, acct.orgDomain);
+      launchErrors = launchErrors.filter((e) => e.accountId !== acct.id);
+      await launchCustomer(acct);
+    });
+  });
+  main.querySelectorAll("[data-dismiss-error]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      launchErrors = launchErrors.filter((e) => e.accountId !== btn.dataset.dismissError);
+      render();
+    });
+  });
   main.querySelector("#close-all-sessions")?.addEventListener("click", () => {
     showBatchCloseConfirmation(activeSessions);
   });
@@ -1095,7 +1262,7 @@ function render() {
     if (selected.length > 0) showBatchCloseConfirmation(selected);
   });
   main.querySelectorAll("[data-row-action]").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", (e) => {
       if (btn.disabled || btn.classList.contains("is-disabled")) return;
       const id = btn.dataset.accountId;
       const acct = accounts.find((a) => a.id === id);
@@ -1103,8 +1270,10 @@ function render() {
       if (btn.dataset.rowAction === "launch") launchCustomer(acct);
       if (btn.dataset.rowAction === "copy") copyInstruction(acct);
       if (btn.dataset.rowAction === "favorite") toggleFavorite(id);
+      if (btn.dataset.rowAction === "more") { e.stopPropagation(); showMoreActionsMenu(btn, acct, e); }
       if (btn.dataset.rowAction === "close-session") {
-        showCloseConfirmation(btn.dataset.sessionId, acct.orgDomain);
+        const sess = activeSessions.find((s) => s.sessionId === btn.dataset.sessionId);
+        showCloseConfirmation(btn.dataset.sessionId, acct.orgDomain, sess?.status === "stale");
       }
     });
   });
@@ -1193,14 +1362,15 @@ function renderRow(a, isLast) {
   const checked = selectedIds.has(a.id);
   const session = activeSessions.find((s) => s.accountId === a.id);
   const hasSession = !!session;
+  const isStale = hasSession && session.status === "stale";
   return `
-    <div class="tbl__row${checked ? " is-selected" : ""}${hasSession ? " has-session" : ""}" data-id="${esc(a.id)}" style="${isLast ? "border-bottom:none" : ""}">
+    <div class="tbl__row${checked ? " is-selected" : ""}${hasSession ? " has-session" : ""}${isStale ? " is-stale" : ""}" data-id="${esc(a.id)}" style="${isLast ? "border-bottom:none" : ""}">
       <button class="tbl__check${checked ? " is-checked" : ""}" data-check-id="${esc(a.id)}">
         <svg viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6l2.5 2.5 4.5-5"/></svg>
       </button>
       <div class="avatar-wrap">
         ${avatarHTML(a)}
-        ${hasSession ? `<span class="session-dot"></span>` : ""}
+        ${hasSession ? `<span class="session-dot${isStale ? " session-dot--stale" : ""}"></span>` : ""}
       </div>
       <div style="min-width:0">
         <div class="tbl__org">${esc(a.orgDomain)}</div>
@@ -1208,14 +1378,17 @@ function renderRow(a, isLast) {
       </div>
       <div class="tbl__email">${esc(a.email)}</div>
       <div>${serverPillHTML(a.serverKey)}</div>
-      <div class="tbl__lastused">${hasSession ? sessionDuration(session.launchedAt) : (a.lastUsed ? esc(a.lastUsed) : "")}</div>
+      <div class="tbl__lastused">
+        ${hasSession ? sessionDuration(session.launchedAt) : (a.lastUsed ? esc(a.lastUsed) : "")}
+        ${isStale ? `<span class="badge badge--stale" title="Process may have exited">Stale</span>` : ""}
+      </div>
       <div class="tbl__actions">
         <button class="btn-fav${favoriteIds.has(a.id) ? " is-active" : ""}" data-row-action="favorite" data-account-id="${esc(a.id)}" title="${favoriteIds.has(a.id) ? "Remove from favorites" : "Add to favorites"}">
           ${favoriteIds.has(a.id) ? ICON.starFilled : ICON.star}
         </button>
         ${hasSession ? `
-          <button class="btn btn--danger btn--sm" data-row-action="close-session" data-account-id="${esc(a.id)}" data-session-id="${esc(session.sessionId)}">
-            ${ICON.stop} Close
+          <button class="btn ${isStale ? "btn--warn" : "btn--danger"} btn--sm" data-row-action="close-session" data-account-id="${esc(a.id)}" data-session-id="${esc(session.sessionId)}">
+            ${ICON.stop} ${isStale ? "Force close" : "Close"}
           </button>
         ` : `
           <div class="btn-split${disabled ? " is-disabled" : ""}">
@@ -1229,7 +1402,7 @@ function renderRow(a, isLast) {
         <button class="btn-icon" data-row-action="copy" data-account-id="${esc(a.id)}" title="Copy CLI flags">
           ${ICON.copy}
         </button>
-        <button class="btn-icon" title="More actions">${ICON.more}</button>
+        <button class="btn-icon" data-row-action="more" data-account-id="${esc(a.id)}" title="More actions">${ICON.more}</button>
       </div>
     </div>
   `;
@@ -1451,10 +1624,10 @@ function renderEmpty() {
         <line x1="46" y1="60" x2="100" y2="60" stroke="#DFE0E3" stroke-width="2" stroke-linecap="round" />
         <line x1="46" y1="90" x2="108" y2="90" stroke="#DFE0E3" stroke-width="2" stroke-linecap="round" />
       </svg>
-      <h2>Start by authenticating a customer</h2>
-      <p>Each customer launch opens Chrome and a Claude Code terminal scoped to that account, in its own virtual desktop. Pick a server to begin.</p>
+      <h2>Welcome to DR Launcher</h2>
+      <p>DR Launcher opens isolated Chrome + Claude Code sessions for each customer account, keeping your work separated. Authenticate a customer below to get started.</p>
       <div class="empty__servers">
-        ${SERVERS.map((s) => `
+        ${serverList.map((s) => `
           <button class="empty__server" data-empty-server="${esc(s.key)}">
             <span class="server-pill__dot" style="background:${s.color}"></span>
             Connect via ${esc(s.key)}
@@ -1464,6 +1637,82 @@ function renderEmpty() {
       </div>
     </div>
   `;
+}
+
+// ── Dropdown menus ──────────────────────────────────────────────
+function showDropdown(anchorEl, items, evt) {
+  if (evt) evt.stopPropagation();
+  closeDropdown();
+  const rect = anchorEl.getBoundingClientRect();
+  const menu = document.createElement("div");
+  menu.className = "dropdown-menu";
+  menu.id = "active-dropdown";
+  for (const item of items) {
+    if (item === "---") {
+      const sep = document.createElement("div");
+      sep.className = "dropdown-menu__sep";
+      menu.appendChild(sep);
+      continue;
+    }
+    const btn = document.createElement("button");
+    btn.className = "dropdown-menu__item";
+    btn.textContent = item.label;
+    btn.addEventListener("click", () => { closeDropdown(); item.action(); });
+    menu.appendChild(btn);
+  }
+  document.body.appendChild(menu);
+  const menuRect = menu.getBoundingClientRect();
+  let left = rect.right - menuRect.width;
+  let top = rect.bottom + 4;
+  if (left < 4) left = 4;
+  if (top + menuRect.height > window.innerHeight - 4) top = rect.top - menuRect.height - 4;
+  menu.style.left = left + "px";
+  menu.style.top = top + "px";
+  setTimeout(() => document.addEventListener("click", closeDropdown, { once: true }), 10);
+  document.addEventListener("keydown", dropdownEsc);
+}
+function closeDropdown() {
+  document.getElementById("active-dropdown")?.remove();
+  document.removeEventListener("keydown", dropdownEsc);
+}
+function dropdownEsc(e) { if (e.key === "Escape") closeDropdown(); }
+
+function showFilterDropdown(anchor, evt) {
+  const items = [
+    { label: "All servers", action() { filterServer = null; render(); } },
+    ...serverList.map((s) => ({
+      label: `${s.key} — ${s.label}`,
+      action() { filterServer = s.key; render(); },
+    })),
+  ];
+  showDropdown(anchor, items, evt);
+}
+
+function showSortDropdown(anchor, evt) {
+  showDropdown(anchor, [
+    { label: "Last used", action() { sortMode = "lastUsed"; render(); } },
+    { label: "Customer A–Z", action() { sortMode = "az"; render(); } },
+    { label: "Server", action() { sortMode = "server"; render(); } },
+  ], evt);
+}
+
+function showMoreActionsMenu(anchor, acct, evt) {
+  const items = [
+    { label: "Copy CLI flags", action() { copyInstruction(acct); } },
+    { label: "Open in browser", action() { window.open(acct.serverHost || serverInfo(acct.serverKey).host, "_blank"); } },
+  ];
+  const wsSlug = workspace_slug(acct.serverKey, acct.orgId, acct.orgDomain);
+  if (healthChecks?.workspaceRoot?.path) {
+    items.push({ label: "Open workspace folder", action() {
+      fetch("/api/open-folder", { method: "POST", headers, body: JSON.stringify({ folderPath: healthChecks.workspaceRoot.path + "\\\\" + wsSlug }) });
+    }});
+  }
+  showDropdown(anchor, items, evt);
+}
+
+function workspace_slug(serverKey, orgId, orgDomain) {
+  const domain = (orgDomain || "").replace(/[^a-z0-9.-]/gi, "-").toLowerCase();
+  return `${(serverKey || "").toLowerCase()}-${orgId || "0"}-${domain}`;
 }
 
 // ── Modals (auth picker, settings, instruction fallback) ─────────
@@ -1483,6 +1732,14 @@ function showToast(message, level, opts = {}) {
     setTimeout(() => el.remove(), 200);
   };
 
+  if (opts.action) {
+    const actionBtn = document.createElement("button");
+    actionBtn.className = "toast__action";
+    actionBtn.textContent = opts.action.label;
+    actionBtn.addEventListener("click", () => { opts.action.fn(); dismiss(); });
+    el.appendChild(actionBtn);
+  }
+
   const closeBtn = document.createElement("button");
   closeBtn.className = "toast__close";
   closeBtn.innerHTML = ICON.x;
@@ -1491,7 +1748,7 @@ function showToast(message, level, opts = {}) {
 
   tray.appendChild(el);
 
-  const persistent = opts.persistent || level === "error";
+  const persistent = opts.persistent || opts.action || level === "error";
   if (!persistent) {
     const duration = opts.duration || (level === "warn" ? 8000 : 6000);
     setTimeout(dismiss, duration);
@@ -1529,6 +1786,79 @@ function showInstructionModal(instruction, domain, workspacePath) {
   wireModalClose(overlay);
 }
 
+function showFirstLaunchModal(data) {
+  const wsPath = data.workspace?.path || "unknown";
+  const hasVD = data.virtualDesktop?.ok;
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal" style="width:520px">
+      <div class="modal__head">
+        <div>
+          <h2>What just happened?</h2>
+          <p>Here's what DR Launcher set up for this customer session.</p>
+        </div>
+        <button class="modal__close" aria-label="Close">${ICON.x}</button>
+      </div>
+      <div class="modal__body" style="font-size:14px;line-height:1.7">
+        <ul style="padding-left:20px;margin:0">
+          <li><strong>Chrome</strong> opened with an isolated profile — cookies and sessions won't leak between customers</li>
+          <li>A <strong>workspace</strong> was created at <code style="font-family:var(--dr-font-mono);font-size:12px">${esc(wsPath)}</code></li>
+          <li><strong>CLAUDE.md</strong> in that workspace auto-configures Claude with this customer's context</li>
+          <li>A <strong>terminal</strong> opened with Claude Code scoped to that workspace</li>
+          ${hasVD ? `<li>Everything was moved to its own <strong>virtual desktop</strong> — use <kbd>Ctrl+Win+Arrow</kbd> to switch</li>` : ""}
+        </ul>
+      </div>
+      <div class="modal__foot">
+        <span style="font-size:12px;color:var(--dr-text-secondary)">This message only appears once.</span>
+        <button class="btn btn--primary" data-modal-close>Got it</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  wireModalClose(overlay);
+}
+
+function showHelpModal() {
+  const wsRoot = healthChecks?.workspaceRoot?.path || "~/Documents/DR-Customers";
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal" style="width:560px">
+      <div class="modal__head">
+        <div>
+          <h2>DR Launcher Quick Guide</h2>
+        </div>
+        <button class="modal__close" aria-label="Close">${ICON.x}</button>
+      </div>
+      <div class="modal__body" style="font-size:14px;line-height:1.7">
+        <dl style="margin:0">
+          <dt style="font-weight:600;margin-top:8px">Launch</dt>
+          <dd style="margin-left:0;color:var(--dr-text-secondary)">Opens isolated Chrome + Claude Code terminal per customer</dd>
+          <dt style="font-weight:600;margin-top:8px">Workspaces</dt>
+          <dd style="margin-left:0;color:var(--dr-text-secondary)"><code style="font-family:var(--dr-font-mono);font-size:12px">${esc(wsRoot)}/&lt;server-orgid-domain&gt;/</code></dd>
+          <dt style="font-weight:600;margin-top:8px">CLAUDE.md</dt>
+          <dd style="margin-left:0;color:var(--dr-text-secondary)">Auto-configures Claude with customer context (server, account, CLI flags)</dd>
+          <dt style="font-weight:600;margin-top:8px">Virtual desktops</dt>
+          <dd style="margin-left:0;color:var(--dr-text-secondary)">Optional — each launch gets its own Windows desktop (<kbd>Ctrl+Win+Arrow</kbd> to switch)</dd>
+        </dl>
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--dr-border)">
+          <div style="font-weight:600;margin-bottom:4px">Keyboard shortcuts</div>
+          <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13px;color:var(--dr-text-secondary)">
+            <kbd>Ctrl+K</kbd><span>Focus search</span>
+            <kbd>Ctrl+A</kbd><span>Select all visible</span>
+            <kbd>Escape</kbd><span>Close modal / clear search</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal__foot">
+        <span></span>
+        <button class="btn btn--primary" data-modal-close>Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  wireModalClose(overlay);
+}
+
 function showAuthModal() {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
@@ -1542,13 +1872,13 @@ function showAuthModal() {
         <button class="modal__close" aria-label="Close">${ICON.x}</button>
       </div>
       <div class="modal__body">
-        ${SERVERS.map((s) => {
+        ${serverList.map((s) => {
           const n = accounts.filter((a) => a.serverKey === s.key).length;
           return `
             <button class="auth-server" data-server="${esc(s.key)}">
               <span class="auth-server__key" style="background:${s.soft};color:${s.text}">${esc(s.key)}</span>
               <span style="flex:1; min-width:0">
-                <span class="auth-server__region">${esc(SERVER_REGION[s.key] || s.key)}</span>
+                <span class="auth-server__region">${esc(s.region || s.key)}</span>
                 <span class="auth-server__host">${esc(s.label)}</span>
               </span>
               <span class="auth-server__meta">${n} authenticated</span>
@@ -1645,6 +1975,20 @@ function showSettingsModal() {
           </div>
 
           <div>
+            <div class="settings-group__title">Storage</div>
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-row__main">
+                  <div class="settings-row__label">Cleanup unused data</div>
+                  <div class="settings-row__sub">Scan for orphaned Chrome profiles and workspaces from old launches</div>
+                </div>
+                <button class="btn btn--sm" id="settings-cleanup-scan">Scan</button>
+              </div>
+              <div id="cleanup-results" style="display:none"></div>
+            </div>
+          </div>
+
+          <div>
             <div class="settings-group__title">About</div>
             <div class="settings-card">
               <div class="settings-row">
@@ -1652,6 +1996,7 @@ function showSettingsModal() {
                   <div>DR Launcher — local-first customer launcher</div>
                   <div>API token: <code style="font-family:var(--dr-font-mono);color:var(--dr-text-body)">${esc(String(API_TOKEN).slice(0, 6))}…${esc(String(API_TOKEN).slice(-4))}</code></div>
                 </div>
+                <button class="btn btn--sm" id="settings-copy-diag">Copy diagnostics</button>
               </div>
             </div>
           </div>
@@ -1689,6 +2034,23 @@ function showSettingsModal() {
       syncBtn.innerHTML = `${ICON.refresh} Sync now`;
     });
   }
+  const diagBtn = overlay.querySelector("#settings-copy-diag");
+  if (diagBtn) {
+    diagBtn.addEventListener("click", async () => {
+      diagBtn.disabled = true;
+      diagBtn.textContent = "Copying…";
+      try {
+        const res = await fetch("/api/diagnostics", { headers });
+        const data = await res.json();
+        await navigator.clipboard.writeText(data.text || "No diagnostics available");
+        showToast("Diagnostics copied to clipboard.");
+      } catch (err) {
+        showToast("Failed to copy diagnostics: " + err.message, "error");
+      }
+      diagBtn.disabled = false;
+      diagBtn.textContent = "Copy diagnostics";
+    });
+  }
   overlay.addEventListener("click", async (e) => {
     const btn = e.target.closest("#settings-health-recheck");
     if (!btn) return;
@@ -1702,6 +2064,92 @@ function showSettingsModal() {
     }
     showToast("Health check complete.");
   });
+  const cleanupBtn = overlay.querySelector("#settings-cleanup-scan");
+  if (cleanupBtn) {
+    cleanupBtn.addEventListener("click", async () => {
+      cleanupBtn.disabled = true;
+      cleanupBtn.textContent = "Scanning…";
+      try {
+        const res = await fetch("/api/cleanup/scan", { headers });
+        const data = await res.json();
+        const resultsDiv = overlay.querySelector("#cleanup-results");
+        if (!resultsDiv) return;
+        const totalProfiles = data.profiles?.length || 0;
+        const totalWorkspaces = data.workspaces?.length || 0;
+        if (totalProfiles === 0 && totalWorkspaces === 0) {
+          resultsDiv.style.display = "block";
+          resultsDiv.innerHTML = `<div style="padding:12px 16px;color:var(--dr-text-secondary);font-size:13px">No orphaned data found.</div>`;
+          return;
+        }
+        let html = `<div style="padding:12px 16px;font-size:13px">`;
+        if (totalProfiles > 0) {
+          const totalSize = data.profiles.reduce((sum, p) => sum + p.sizeMB, 0).toFixed(1);
+          html += `<div style="margin-bottom:8px"><strong>${totalProfiles} orphaned Chrome profile${totalProfiles > 1 ? "s" : ""}</strong> (${totalSize} MB)</div>`;
+          html += `<div style="margin-bottom:8px">`;
+          data.profiles.forEach((p) => {
+            html += `<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;color:var(--dr-text-secondary)">
+              <input type="checkbox" class="cleanup-profile-cb" data-path="${esc(p.path)}" checked>
+              ${esc(p.slug)} (${p.sizeMB} MB)${p.lastUsed ? ` — last used ${new Date(p.lastUsed).toLocaleDateString()}` : ""}
+            </label>`;
+          });
+          html += `</div><button class="btn btn--sm btn--danger" id="cleanup-purge-profiles">Delete selected profiles</button>`;
+        }
+        if (totalWorkspaces > 0) {
+          const totalSize = data.workspaces.reduce((sum, w) => sum + w.sizeMB, 0).toFixed(1);
+          html += `<div style="margin-top:12px;margin-bottom:8px"><strong>${totalWorkspaces} orphaned workspace${totalWorkspaces > 1 ? "s" : ""}</strong> (${totalSize} MB)</div>`;
+          html += `<div style="margin-bottom:8px">`;
+          data.workspaces.forEach((w) => {
+            html += `<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;color:var(--dr-text-secondary)">
+              <input type="checkbox" class="cleanup-ws-cb" data-path="${esc(w.path)}" checked>
+              ${esc(w.slug)} (${w.sizeMB} MB)${w.hasUserContent ? ` <span class="badge badge--stale" title="Contains user-modified content">modified</span>` : ""}
+            </label>`;
+          });
+          html += `</div><button class="btn btn--sm btn--warn" id="cleanup-quarantine-ws">Move selected to quarantine</button>`;
+        }
+        html += `</div>`;
+        resultsDiv.style.display = "block";
+        resultsDiv.innerHTML = html;
+        const purgeBtn = resultsDiv.querySelector("#cleanup-purge-profiles");
+        if (purgeBtn) {
+          purgeBtn.addEventListener("click", async () => {
+            const checked = [...resultsDiv.querySelectorAll(".cleanup-profile-cb:checked")].map((cb) => cb.dataset.path);
+            if (checked.length === 0) return showToast("No profiles selected.", "warn");
+            purgeBtn.disabled = true;
+            purgeBtn.textContent = "Deleting…";
+            try {
+              const r = await fetch("/api/cleanup/purge", { method: "POST", headers, body: JSON.stringify({ profiles: checked }) });
+              const d = await r.json();
+              showToast(`Deleted ${d.profiles?.deleted?.length || 0} profile(s).`);
+              cleanupBtn.click();
+            } catch (err) {
+              showToast("Purge failed: " + err.message, "error");
+            }
+          });
+        }
+        const quarantineBtn = resultsDiv.querySelector("#cleanup-quarantine-ws");
+        if (quarantineBtn) {
+          quarantineBtn.addEventListener("click", async () => {
+            const checked = [...resultsDiv.querySelectorAll(".cleanup-ws-cb:checked")].map((cb) => cb.dataset.path);
+            if (checked.length === 0) return showToast("No workspaces selected.", "warn");
+            quarantineBtn.disabled = true;
+            quarantineBtn.textContent = "Moving…";
+            try {
+              const r = await fetch("/api/cleanup/purge", { method: "POST", headers, body: JSON.stringify({ workspaces: checked }) });
+              const d = await r.json();
+              showToast(`Quarantined ${d.workspaces?.quarantined?.length || 0} workspace(s).`);
+              cleanupBtn.click();
+            } catch (err) {
+              showToast("Quarantine failed: " + err.message, "error");
+            }
+          });
+        }
+      } catch (err) {
+        showToast("Scan failed: " + err.message, "error");
+      }
+      cleanupBtn.disabled = false;
+      cleanupBtn.textContent = "Scan";
+    });
+  }
   wireModalClose(overlay);
 }
 
@@ -1798,8 +2246,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   await fetchAuthStatus();
 
   if (authState.authenticated) {
-    document.getElementById("login-screen").style.display = "none";
-    document.getElementById("app-shell").style.display = "";
+    const loginEl = document.getElementById("login-screen");
+    const appEl = document.getElementById("app-shell");
+    if (loginEl) loginEl.style.display = "none";
+    if (appEl) appEl.style.display = "";
     try {
       const syncRes = await fetch("/api/sync/init", { method: "POST", headers });
       const syncData = await syncRes.json();
@@ -1814,8 +2264,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 async function initApp() {
-  document.getElementById("btn-refresh")?.addEventListener("click", fetchAccounts);
+  document.getElementById("btn-refresh")?.addEventListener("click", () => fetchAccounts(true));
   document.getElementById("btn-settings")?.addEventListener("click", showSettingsModal);
+  document.getElementById("btn-help")?.addEventListener("click", showHelpModal);
   document.getElementById("btn-theme")?.addEventListener("click", toggleTheme);
 
   document.getElementById("user-switcher")?.addEventListener("click", () => {
@@ -1834,7 +2285,7 @@ async function initApp() {
 
   initKeyboardShortcuts();
 
-  await Promise.all([fetchSettings(), fetchHealth(), fetchRecents(), fetchSessions()]);
+  await Promise.all([fetchServers(), fetchSettings(), fetchHealth(), fetchRecents(), fetchSessions()]);
 
   favoriteIds = new Set(userSettings.favoriteIds || []);
   collapsedServers = new Set(userSettings.collapsedServers || []);
@@ -1842,7 +2293,10 @@ async function initApp() {
 
   await fetchAccounts();
 
-  setInterval(checkSessionHealth, 30000);
+  setInterval(async () => {
+    await checkSessionHealth();
+    await fetchAccounts();
+  }, 30000);
 
   const validIds = new Set(accounts.map((a) => a.id));
   for (const id of [...selectedIds]) { if (!validIds.has(id)) selectedIds.delete(id); }
