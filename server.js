@@ -314,7 +314,7 @@ app.get("/api/cli/install", requireToken, (req, res) => {
   send("status", "Starting DR CLI install/update…");
 
   const npmCmd = "npm install -g dr-cli --registry https://datarails.jfrog.io/artifactory/api/npm/dr-cli-client-virtual";
-  const child = spawn("powershell.exe", ["-NoProfile", "-Command", npmCmd], {
+  const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", npmCmd], {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });

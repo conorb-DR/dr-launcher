@@ -259,11 +259,16 @@ async function fetchAccounts(force) {
   try {
     const url = force ? "/api/accounts?force=1" : "/api/accounts";
     const res = await fetch(url, { headers });
+    if (!res.ok) {
+      if (accounts.length === 0) showToast("Failed to load accounts (server returned " + res.status + ")", "error");
+      loading = false;
+      render();
+      return;
+    }
     const data = await res.json();
     accounts = data.accounts || [];
   } catch (err) {
-    showToast("Failed to load accounts: " + err.message, "error");
-    accounts = [];
+    if (accounts.length === 0) showToast("Failed to load accounts: " + err.message, "error");
   }
   loading = false;
   lastRefreshedAt = new Date();
