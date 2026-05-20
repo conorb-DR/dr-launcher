@@ -2,7 +2,7 @@ const express = require("express");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { exec } = require("child_process");
+const { exec, spawn } = require("child_process");
 
 const drCli = require("./lib/dr-cli");
 const chrome = require("./lib/chrome");
@@ -132,7 +132,7 @@ const API_TOKEN = crypto.randomBytes(24).toString("hex");
 let healthChecksCache = null;
 
 function requireToken(req, res, next) {
-  const token = req.headers["x-dr-launcher-token"];
+  const token = req.headers["x-dr-launcher-token"] || req.query.token;
   if (token !== API_TOKEN) {
     return res.status(403).json({ error: "Invalid or missing API token" });
   }
@@ -294,6 +294,52 @@ app.get("/api/health", requireToken, async (req, res) => {
     status: "ok",
     checks,
     servers: servers.getServerList().map((s) => s.key),
+  });
+});
+
+// DR CLI version check
+app.get("/api/cli/version", requireToken, (req, res) => {
+  const version = drCli.getDrVersion();
+  res.json({ installed: !!version, version });
+});
+
+// DR CLI install/update — streams output via SSE
+app.get("/api/cli/install", requireToken, (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  const send = (type, data) => res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
+  send("status", "Starting DR CLI install/update…");
+
+  const npmCmd = "npm install -g dr-cli --registry https://datarails.jfrog.io/artifactory/api/npm/dr-cli-client-virtual";
+  const child = spawn("powershell.exe", ["-NoProfile", "-Command", npmCmd], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  child.stdout.on("data", (chunk) => send("stdout", chunk.toString()));
+  child.stderr.on("data", (chunk) => send("stderr", chunk.toString()));
+  child.on("close", (code) => {
+    if (code === 0) {
+      drCli.resetDrCache();
+      send("done", "DR CLI installed/updated successfully.");
+      logger.log("info", "cli", "DR CLI install/update completed");
+    } else {
+      send("error", `Install exited with code ${code}. This can happen if dr-cli is currently running — close any terminals using it and retry.`);
+      logger.log("error", "cli", `DR CLI install failed with exit code ${code}`);
+    }
+    setTimeout(() => { try { res.end(); } catch {} }, 500);
+  });
+  child.on("error", (err) => {
+    send("error", `Failed to start install: ${err.message}`);
+    logger.log("error", "cli", `DR CLI install spawn error: ${err.message}`);
+    setTimeout(() => { try { res.end(); } catch {} }, 500);
+  });
+
+  req.on("close", () => {
+    try { child.kill(); } catch {}
   });
 });
 

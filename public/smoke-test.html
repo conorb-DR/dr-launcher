@@ -108,6 +108,7 @@
       { ts: new Date().toISOString(), level: "info", category: "http", message: "GET /api/accounts 200", meta: { ms: 1200 } }
     ]});
     if (u.startsWith("/api/diagnostics")) return reply({ text: "DR Launcher Diagnostics\n========================\nOS: Windows 11\nNode: v20.0.0\nServers: US, US2, UK, CA\nWorkspace root: C:\\Users\\Demo\\Documents\\DR-Customers (writable: true)\n\nRecent log entries:\n[INFO] [server] DR Launcher running at http://127.0.0.1:3456\n[INFO] [http] GET /api/accounts 200 (1200ms)" });
+    if (u.startsWith("/api/cli/version"))  return reply({ installed: true, version: "0.2.50" });
     if (u.startsWith("/api/cleanup/scan")) return reply({ profiles: [
       { path: "C:\\Users\\Demo\\AppData\\Local\\DR Launcher\\ChromeProfiles\\us-99999-old-customer-com", slug: "us-99999-old-customer-com", sizeMB: 42.3, lastUsed: "2025-12-01T00:00:00Z" }
     ], workspaces: [

@@ -1,9 +1,5 @@
 // ───────────────────────────────────────────────────────────────
-// DR Launcher · app.js (B3 / Datarails design-system aligned)
-//
-// API logic from the original app.js is preserved verbatim. The only
-// substantive change is the markup output by render() and the new
-// helpers (renderSidebar, serverInfo, accountAvatar, etc).
+// DR Launcher · app.js (Studio design system)
 // ───────────────────────────────────────────────────────────────
 
 const API_TOKEN = window.__DR_TOKEN__;
@@ -19,30 +15,31 @@ let loading = true;
 let userSettings = { useVirtualDesktops: false };
 let vdAvailable = null;
 let launchInProgress = false;
-let activeLaunch = null;   // { orgDomain, serverKey, step, totalSteps, label } when running
-let recentLaunches = [];   // persisted via /api/recents
-let filterServer = null;   // "US" | "US2" | "UK" | "CA" | null (= all)
+let activeLaunch = null;
+let recentLaunches = [];
+let filterServer = null;
 let selectedIds = new Set();
-let batchOrder = [];       // ordered IDs for batch launch, synced with selectedIds
-let batchQueue = null;     // { ids: [], current: 0 } when a batch launch is running
-let searchQuery = "";      // live search filter
-let launchSSE = null;      // EventSource for live progress
-let viewMode = "all";      // "all" | "recent" | "favorites"
+let batchOrder = [];
+let batchQueue = null;
+let searchQuery = "";
+let launchSSE = null;
+let viewMode = "all";
 let favoriteIds = new Set();
 let collapsedServers = new Set();
 let syncStatus = { lastSyncedAt: null, dirty: false, cloudAvailable: false, error: null };
-let dragIdx = null;        // index being dragged in batch list
-let activeSessions = [];   // active session objects from server
-let healthChecks = null;   // full checks object from /api/health
-let prereqWarningDismissed = false; // session-only dismissal of warning banner
-let batchCloseInProgress = false;  // true during batch close operation
-let batchCloseProgress = null;     // { total, current } when running
+let dragIdx = null;
+let activeSessions = [];
+let healthChecks = null;
+let prereqWarningDismissed = false;
+let batchCloseInProgress = false;
+let batchCloseProgress = null;
 let authState = { configured: false, authenticated: false, user: null };
 let launchErrors = [];
-let sortMode = "lastUsed";   // "lastUsed" | "az" | "server"
+let sortMode = "lastUsed";
 let lastRefreshedAt = null;
+let statusFilter = "all"; // "all" | "active" | "stale" | "reauth" | "idle"
 
-// ── Server metadata (fetched from API, bundled fallback for first paint) ─────
+// ── Server metadata ──────────────────────────────────────────────
 let serverList = [
   { key: "US",  label: "app.datarails.com",      color: "#4646CE", soft: "#DFD9FF", text: "#25258C", region: "United States" },
   { key: "US2", label: "us-2.datarails.com",     color: "#7B61FF", soft: "#F0EEFF", text: "#5D45D6", region: "United States (instance 2)" },
@@ -61,6 +58,31 @@ async function fetchServers() {
     }
   } catch { /* keep fallback */ }
 }
+
+// ── Row state derivation ─────────────────────────────────────────
+function rowState(account) {
+  const session = activeSessions.find((s) => s.accountId === account.id);
+  const queued = selectedIds.has(account.id) && batchQueue;
+  if (queued) return "queued";
+  if (launchInProgress && activeLaunch?.orgDomain === account.orgDomain) return "launching";
+  if (session) {
+    if (session.status === "stale") return "stale";
+    return "active";
+  }
+  if (account.cliAuthStatus === "expired") return "reauth";
+  const err = launchErrors.find((e) => e.accountId === account.id);
+  if (err) return "failed";
+  return "idle";
+}
+
+const ST_STATE_LABELS = {
+  active: "Active",
+  stale: "Stale",
+  reauth: "Needs re-auth",
+  failed: "Partial launch",
+  queued: "Queued",
+  launching: "Launching",
+};
 
 // ── Auth API ─────────────────────────────────────────────────────
 async function fetchAuthStatus() {
@@ -127,7 +149,7 @@ async function transitionToApp() {
     const res = await fetch("/api/sync/init", { method: "POST", headers });
     const data = await res.json();
     if (data.ok && data.preferences) {
-      applyTheme(data.preferences.theme || "light");
+      applyTheme(data.preferences.theme || "warm");
     }
     await fetchSyncStatus();
   } catch { /* sync is best-effort */ }
@@ -146,7 +168,7 @@ async function triggerSync() {
     const res = await fetch("/api/sync", { method: "POST", headers });
     const data = await res.json();
     if (data.ok) {
-      if (data.preferences) applyTheme(data.preferences.theme || "light");
+      if (data.preferences) applyTheme(data.preferences.theme || "warm");
       await Promise.all([fetchSettings(), fetchRecents()]);
       favoriteIds = new Set(userSettings.favoriteIds || []);
       collapsedServers = new Set(userSettings.collapsedServers || []);
@@ -173,21 +195,28 @@ async function triggerLogout() {
 }
 
 function updateUserUI() {
-  const avatarEl = document.getElementById("user-avatar");
-  const nameEl = document.getElementById("user-name");
-  const topbarAvatar = document.getElementById("topbar-avatar");
+  const pill = document.getElementById("user-pill");
+  if (!pill) return;
   if (authState.authenticated && authState.user) {
     const u = authState.user;
-    if (avatarEl) avatarEl.textContent = u.initials;
-    if (nameEl) nameEl.textContent = u.name;
-    if (topbarAvatar) topbarAvatar.textContent = u.initials;
+    pill.innerHTML = `
+      <span class="user-pill__avatar" style="background:linear-gradient(135deg, #F93576, #BE1E52)">
+        ${esc(u.initials || "?")}
+        <span class="user-pill__sync-dot${syncStatus.error ? " user-pill__sync-dot--error" : ""}"></span>
+      </span>
+      <span class="user-pill__info">
+        <span class="user-pill__name">${esc(u.name || "User")}</span>
+        <span class="user-pill__status" style="color:var(--st-state-active-fg)">● synced ${syncStatus.lastSyncedAt ? new Date(syncStatus.lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+      </span>
+      <svg class="user-pill__caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+    `;
   } else {
-    if (avatarEl) avatarEl.textContent = "?";
-    if (nameEl) nameEl.textContent = "Sign in";
-    if (topbarAvatar) topbarAvatar.textContent = "?";
+    pill.innerHTML = `
+      <span class="user-pill__avatar">?</span>
+      <span class="user-pill__info"><span class="user-pill__name">Sign in</span></span>
+    `;
   }
 
-  // Toggle login panels based on whether Azure AD is configured
   const msPanel = document.getElementById("login-microsoft");
   const devPanel = document.getElementById("login-dev");
   if (msPanel) msPanel.style.display = authState.configured ? "" : "none";
@@ -223,7 +252,7 @@ async function triggerDevLogin() {
   }
 }
 
-// ── API calls (unchanged behaviour from original) ────────────────
+// ── API calls ────────────────────────────────────────────────────
 async function fetchAccounts(force) {
   loading = accounts.length === 0;
   if (loading) render();
@@ -374,8 +403,8 @@ function showCloseConfirmation(sessionId, orgDomain, isStale = false) {
         <button class="modal__close" aria-label="Close">${ICON.x}</button>
       </div>
       <div class="modal__foot">
-        <button class="btn btn--ghost" data-modal-close>Cancel</button>
-        <button class="btn ${isStale ? "btn--warn" : "btn--danger"}" id="confirm-close-session">${isStale ? "Force close" : "Close session"}</button>
+        <button class="st-btn st-btn--ghost" data-modal-close>Cancel</button>
+        <button class="st-btn ${isStale ? "st-btn--stale" : "st-btn--destructive"}" id="confirm-close-session">${isStale ? "Force close" : "Close session"}</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -428,11 +457,10 @@ function showBatchCloseConfirmation(sessionsToClose) {
   overlay.className = "modal-overlay";
   const listHtml = sessionsToClose.map(s => {
     const si = serverInfo(s.serverKey);
-    return `<div class="batch-close-item">
-      <span class="server-pill server-pill--${esc(si.key)}" style="background:${si.soft};color:${si.text}">
-        <span class="server-pill__dot" style="background:${si.color}"></span>${esc(si.key)}
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0">
+      <span class="st-badge st-badge--${rowState({ id: s.accountId, cliAuthStatus: "active", orgDomain: s.orgDomain, serverKey: s.serverKey })}">
+        <span class="st-badge__dot"></span>${esc(s.orgDomain)}
       </span>
-      <span>${esc(s.orgDomain)}</span>
     </div>`;
   }).join("");
 
@@ -445,12 +473,12 @@ function showBatchCloseConfirmation(sessionsToClose) {
         </div>
         <button class="modal__close" aria-label="Close">${ICON.x}</button>
       </div>
-      <div class="modal__body" style="max-height:300px; overflow-y:auto; padding:0 24px">
-        <div class="batch-close-list">${listHtml}</div>
+      <div class="modal__body" style="max-height:300px; overflow-y:auto">
+        ${listHtml}
       </div>
       <div class="modal__foot">
-        <button class="btn btn--ghost" data-modal-close>Cancel</button>
-        <button class="btn btn--danger" id="confirm-batch-close">Close ${sessionsToClose.length} session${sessionsToClose.length === 1 ? "" : "s"}</button>
+        <button class="st-btn st-btn--ghost" data-modal-close>Cancel</button>
+        <button class="st-btn st-btn--destructive" id="confirm-batch-close">Close ${sessionsToClose.length} session${sessionsToClose.length === 1 ? "" : "s"}</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -485,6 +513,16 @@ function filterAccounts(list) {
     out = out.filter((a) => ids.has(a.id));
   }
   if (filterServer) out = out.filter((a) => a.serverKey === filterServer);
+  if (statusFilter !== "all") {
+    out = out.filter((a) => {
+      const s = rowState(a);
+      if (statusFilter === "active") return s === "active";
+      if (statusFilter === "stale") return s === "stale";
+      if (statusFilter === "reauth") return s === "reauth";
+      if (statusFilter === "idle") return s === "idle";
+      return true;
+    });
+  }
   if (searchQuery) {
     const q = searchQuery.toLowerCase();
     out = out.filter((a) =>
@@ -554,6 +592,7 @@ function connectLaunchSSE() {
         totalSteps: data.totalSteps,
         label: data.label,
       };
+      renderLaunchStrip();
       render();
     } catch { /* ignore */ }
   };
@@ -588,6 +627,7 @@ async function launchCustomer(account, opts = {}) {
   launchInProgress = true;
   activeLaunch = { orgDomain: account.orgDomain, serverKey: account.serverKey, step: 1, totalSteps: 5, label: "Starting" };
   connectLaunchSSE();
+  renderLaunchStrip();
   render();
 
   try {
@@ -707,6 +747,7 @@ async function launchCustomer(account, opts = {}) {
     launchInProgress = false;
     activeLaunch = null;
     disconnectLaunchSSE();
+    renderLaunchStrip();
     render();
   }
 }
@@ -769,6 +810,7 @@ function toggleSelect(id) {
     selectedIds.add(id);
     batchOrder.push(id);
   }
+  renderLaunchStrip();
   render();
 }
 
@@ -786,12 +828,14 @@ function toggleSelectAll(filtered) {
       }
     });
   }
+  renderLaunchStrip();
   render();
 }
 
 function clearSelection() {
   selectedIds.clear();
   batchOrder = [];
+  renderLaunchStrip();
   render();
 }
 
@@ -861,7 +905,6 @@ function esc(str) {
 }
 
 function initialsOf(account) {
-  // "acme-corp.com" → "AC". Falls back to first 2 alpha chars of email.
   const dom = (account.orgDomain || "").replace(/\.[a-z]+$/i, "");
   const parts = dom.split(/[-.]/).filter(Boolean);
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
@@ -871,8 +914,6 @@ function initialsOf(account) {
 }
 
 function avatarColor(account) {
-  // Hash orgDomain into one of the brand chart colors so each customer
-  // gets a stable colour without storing it.
   const palette = ["#4646CE", "#F93576", "#03A678", "#7B61FF", "#FFA310", "#579BF2", "#54DBCE", "#BE1E52"];
   const s = account.orgDomain || account.email || "";
   let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
@@ -889,31 +930,25 @@ function shadeHex(hex, percent) {
   return "#" + x(a(r)) + x(a(g)) + x(a(b));
 }
 
-function avatarHTML(account) {
+function avatarHTML(account, state) {
   const c = avatarColor(account);
-  return `<span class="avatar" style="background:linear-gradient(135deg,${c} 0%,${shadeHex(c, -18)} 100%)">${esc(initialsOf(account))}</span>`;
+  const glow = state === "active" ? " tbl__avatar--glow-active" : state === "stale" ? " tbl__avatar--glow-stale" : "";
+  return `<span class="tbl__avatar${glow}" style="background:linear-gradient(135deg,${c} 0%,${shadeHex(c, -22)} 100%)">${esc(initialsOf(account))}</span>`;
 }
 
-function serverPillHTML(serverKey) {
-  const s = serverInfo(serverKey);
-  return `<span class="server-pill server-pill--${esc(s.key)}" style="background:${s.soft};color:${s.text}">
-    <span class="server-pill__dot" style="background:${s.color}"></span>${esc(s.key)}
-  </span>`;
+function timeAgo(date) {
+  if (!date) return "loading…";
+  const s = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (s < 10) return "just now";
+  if (s < 60) return `${s}s ago`;
+  return `${Math.floor(s / 60)}m ago`;
 }
 
-function cliStatusHTML(status) {
-  const active = status === "active";
-  return `<span class="cli-status ${active ? "is-active" : "is-expired"}">
-    <span class="cli-status__dot"></span>${active ? "Authenticated" : "Token expired"}
-  </span>`;
-}
-
-// Inline SVG icons. Kept here (vs <img>) so they can be tinted by currentColor.
 const ICON = {
   rocket: `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.3-.05-3.05a2.07 2.07 0 0 0-2.95.05Z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2Z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>`,
   shield: `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>`,
   copy:   `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
-  more:   `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>`,
+  more:   `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="6" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="18" r="1"/></svg>`,
   chev:   `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
   user:   `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
   clock:  `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`,
@@ -932,9 +967,66 @@ const ICON = {
   checkCircle: `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg>`,
   xCircle: `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>`,
   alertTriangle: `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+  terminal: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
+  book: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></svg>`,
+  externalLink: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`,
+  desktop: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>`,
+  settings: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>`,
+  help: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+  search: `<svg class="ic ic--xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`,
 };
 
-// ── Sidebar rendering ─────────────────────────────────────────────
+// ── Topbar rendering ─────────────────────────────────────────────
+function renderTopbar() {
+  const el = document.getElementById("topbar");
+  if (!el) return;
+
+  el.innerHTML = `
+    <div class="topbar__brand">
+      <img class="topbar__brand-mark" src="/static/ds/brand-mark.png" alt="Datarails" />
+      <span class="topbar__brand-name">datarails</span>
+      <span class="topbar__brand-tag">Launcher</span>
+      <span class="topbar__brand-version">1.4.0</span>
+    </div>
+
+    <div class="topbar__center">
+      <div class="topbar__search">
+        <span class="topbar__search-icon">${ICON.search}</span>
+        <input type="text" placeholder="Search customers, org IDs, hosts" value="${esc(searchQuery)}" />
+        <span class="topbar__kbd">Ctrl+K</span>
+      </div>
+    </div>
+
+    <div class="topbar__right">
+      <button class="st-icon-btn" id="btn-refresh" title="Refresh">${ICON.refresh}</button>
+      <button class="st-icon-btn" id="btn-help" title="Help">${ICON.help}</button>
+      <button class="st-icon-btn" id="btn-settings" title="Settings">${ICON.settings}</button>
+      <span class="topbar__sep"></span>
+      <button class="user-pill" id="user-pill"></button>
+    </div>
+  `;
+
+  updateUserUI();
+
+  el.querySelector("#btn-refresh")?.addEventListener("click", () => fetchAccounts(true));
+  el.querySelector("#btn-settings")?.addEventListener("click", showSettingsModal);
+  el.querySelector("#btn-help")?.addEventListener("click", showHelpModal);
+  el.querySelector("#user-pill")?.addEventListener("click", () => {
+    if (authState.authenticated) {
+      if (confirm("Sign out of DR Launcher?")) triggerLogout();
+    }
+  });
+
+  const searchInput = el.querySelector(".topbar__search input");
+  if (searchInput) {
+    searchInput.addEventListener("input", (e) => {
+      searchQuery = e.target.value.trim();
+      render();
+    });
+  }
+}
+
+// ── Sidebar rendering ────────────────────────────────────────────
 function renderSidebar() {
   const el = document.getElementById("sidebar");
   if (!el) return;
@@ -942,142 +1034,342 @@ function renderSidebar() {
   const total = accounts.length;
   const recent = recentLaunches.length;
   const favCount = favoriteIds.size;
-  const favCustomers = accounts.filter((a) => favoriteIds.has(a.id));
+  const activeCount = accounts.filter((a) => rowState(a) === "active" || rowState(a) === "stale").length;
+  const queueCount = selectedIds.size;
+  const reauthCount = accounts.filter((a) => rowState(a) === "reauth").length;
 
-  const linkHTML = (k, icon, label, count, opts = {}) => {
-    const active = (k === "all" && filterServer === null) || (k === ("srv-" + filterServer));
-    const isActive = opts.active != null ? opts.active : active;
-    const warn = opts.warn ? " sidebar__count--warn" : "";
+  const navItem = (key, icon, label, count, opts = {}) => {
+    const isActive = opts.active || false;
+    const stateClass = opts.state ? ` sidebar__item-count--state` : "";
+    const iconHtml = opts.swatch
+      ? `<span class="sidebar__item-swatch" style="background:${opts.swatch}"></span>`
+      : `<span class="sidebar__item-icon">${icon}</span>`;
     return `
-      <button class="sidebar__link${isActive ? " is-active" : ""}" data-filter="${esc(opts.filter ?? "")}">
-        ${icon}
-        <span class="sidebar__link-text">${label}</span>
-        ${count != null ? `<span class="sidebar__count${warn}">${count}</span>` : ""}
+      <button class="sidebar__item${isActive ? " is-active" : ""}" data-nav="${esc(key)}">
+        ${iconHtml}
+        <span class="sidebar__item-label">${label}</span>
+        ${count != null && count > 0 ? `<span class="sidebar__item-count${stateClass}">${count}</span>` : ""}
       </button>`;
   };
 
+  const envRows = [];
+  if (healthChecks) {
+    envRows.push(["dr CLI", healthChecks.dr?.version || (healthChecks.dr?.found ? "installed" : "—")]);
+    envRows.push(["Chrome", healthChecks.chrome?.found ? "stable" : "—"]);
+    envRows.push(["Windows Terminal", healthChecks.windowsTerminal?.found ? "installed" : "—"]);
+    envRows.push(["Claude", healthChecks.claude?.found ? "installed" : "—"]);
+    envRows.push(["Virtual desktops", vdAvailable ? "on" : "off"]);
+  }
+
+  const allHealthy = healthChecks && healthChecks.dr?.found && healthChecks.chrome?.found;
+
   el.innerHTML = `
-    <div class="sidebar__section">
-      <div class="sidebar__label">Workspaces</div>
+    <div>
+      <div class="sidebar__label">Workspace</div>
       <div class="sidebar__items">
-        ${linkHTML("all", ICON.user, "All customers", total, { active: viewMode === "all" && filterServer === null, filter: "" })}
-        <button class="sidebar__link${viewMode === "recent" ? " is-active" : ""}" data-view="recent">
-          ${ICON.clock}
-          <span class="sidebar__link-text">Recently launched</span>
-          ${recent ? `<span class="sidebar__count">${recent}</span>` : ""}
-        </button>
-        <button class="sidebar__link${viewMode === "favorites" ? " is-active" : ""}" data-view="favorites">
-          ${ICON.star}
-          <span class="sidebar__link-text">Favorites</span>
-          ${favCount ? `<span class="sidebar__count">${favCount}</span>` : ""}
-        </button>
-        <button class="sidebar__link${viewMode === "sessions" ? " is-active" : ""}" data-view="sessions">
-          ${ICON.zap}
-          <span class="sidebar__link-text">Active sessions</span>
-          ${activeSessions.length ? `<span class="sidebar__count sidebar__count--active">${activeSessions.length}</span>` : ""}
-        </button>
+        ${navItem("all", ICON.user, "Customers", total, { active: viewMode === "all" && filterServer === null })}
+        ${navItem("recent", ICON.clock, "Recent", recent, { active: viewMode === "recent" })}
+        ${navItem("sessions", ICON.zap, "Active sessions", activeCount, { active: viewMode === "sessions", state: activeCount > 0 })}
+        ${navItem("queue", ICON.rocket, "Launch queue", queueCount, { active: false })}
+        ${navItem("favorites", "★", "Favorites", favCount, { active: viewMode === "favorites" })}
+        ${navItem("reauth", ICON.shield, "Needs re-auth", reauthCount, { active: false, state: reauthCount > 0 })}
       </div>
     </div>
 
-    <div class="sidebar__section">
+    <div>
       <div class="sidebar__label">Servers</div>
       <div class="sidebar__items">
         ${serverList.map((s) => {
           const n = accounts.filter((a) => a.serverKey === s.key).length;
-          const dot = `<span class="server-pill__dot" style="background:${s.color}"></span>`;
-          const active = filterServer === s.key;
-          return `
-            <button class="sidebar__link${active ? " is-active" : ""}" data-filter="${esc(s.key)}">
-              ${dot}
-              <span class="sidebar__link-text">
-                <span style="font-weight:500">${esc(s.key)}</span>
-                <span class="sidebar__link-host">${esc(s.label)}</span>
-              </span>
-              <span class="sidebar__count">${n}</span>
-            </button>`;
+          return navItem("srv-" + s.key,
+            "",
+            `<span style="font-weight:600">${esc(s.key)}</span><span class="sidebar__server-host">${esc(s.label)}</span>`,
+            n,
+            { active: filterServer === s.key, swatch: s.color }
+          );
         }).join("")}
       </div>
     </div>
 
-    ${favCustomers.length ? `
-      <div class="sidebar__section">
-        <div class="sidebar__label">Favorites</div>
-        <div class="sidebar__items">
-          ${favCustomers.map((a) => `
-            <button class="sidebar__link" data-pinned="${esc(a.id)}">
-              <span class="avatar avatar--sm" style="background:linear-gradient(135deg,${avatarColor(a)} 0%,${shadeHex(avatarColor(a), -18)} 100%)">${esc(initialsOf(a))}</span>
-              <span class="sidebar__link-text" style="font-size:12px">${esc(a.orgDomain)}</span>
-            </button>`).join("")}
-        </div>
+    <div>
+      <div class="sidebar__label">Tools</div>
+      <div class="sidebar__items">
+        ${navItem("diagnostics", ICON.copy, "Diagnostics", null, { active: viewMode === "diagnostics" })}
+        ${navItem("cli-tools", ICON.terminal, "DR CLI", null, { active: viewMode === "cli-tools" })}
+        ${navItem("settings", ICON.settings, "Settings", null, { active: false })}
       </div>
-    ` : ""}
+    </div>
 
-  `;
+    <div style="flex:1"></div>
 
-  // Wire up server-filter buttons.
-  el.querySelectorAll("[data-filter]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const v = btn.dataset.filter;
-      filterServer = v ? v : null;
-      viewMode = "all";
-      render();
-    });
-  });
-  el.querySelectorAll("[data-view]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      viewMode = btn.dataset.view;
-      filterServer = null;
-      render();
-    });
-  });
-  el.querySelectorAll("[data-pinned]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const id = btn.dataset.pinned;
-      const a = accounts.find((x) => x.id === id);
-      if (a && !launchInProgress) launchCustomer(a);
-    });
-  });
-}
-
-
-function timeAgo(date) {
-  if (!date) return "loading…";
-  const s = Math.floor((Date.now() - date.getTime()) / 1000);
-  if (s < 10) return "just now";
-  if (s < 60) return `${s}s ago`;
-  return `${Math.floor(s / 60)}m ago`;
-}
-
-function renderSkeleton() {
-  return `
-    <div class="crumbs"><a href="#">Home</a><span class="sep">/</span><span class="is-current">All customers</span></div>
-    <div class="page-head"><div><h1>All customers</h1><div class="sub">Loading…</div></div></div>
-    <div class="panel">
-      <div class="tbl__header">
-        <div></div><div></div>
-        <div class="tbl__sortable">Customer</div>
-        <div>Account</div>
-        <div>Server</div>
-        <div>Last used</div>
-        <div style="text-align:right">Actions</div>
+    <div class="env-card">
+      <div class="env-card__header">
+        <span class="env-card__title">Environment</span>
+        <span class="env-card__status">
+          <span class="env-card__status-dot" style="background:${allHealthy ? "var(--st-state-active-dot)" : "var(--st-state-failed-dot)"}"></span>
+          ${allHealthy ? "healthy" : "issues"}
+        </span>
       </div>
-      ${Array.from({ length: 6 }, () => `
-        <div class="tbl__row is-skeleton" style="padding:10px 18px">
-          <div></div>
-          <div><span class="skel skel--circle"></span></div>
-          <div><span class="skel skel--text" style="width:${120 + Math.random() * 60}px"></span></div>
-          <div><span class="skel skel--text" style="width:${80 + Math.random() * 60}px"></span></div>
-          <div><span class="skel skel--pill"></span></div>
-          <div><span class="skel skel--text" style="width:60px"></span></div>
-          <div></div>
+      ${envRows.map(([k, v], i) => `
+        <div class="env-card__row">
+          <span class="env-card__row-label">${esc(k)}</span>
+          <span class="env-card__row-value">${esc(v)}</span>
         </div>
       `).join("")}
-    </div>`;
+      <div class="env-card__footer">
+        <button class="env-card__btn" id="copy-support-bundle">
+          ${ICON.copy} Support bundle
+        </button>
+        <button class="env-card__link-btn" id="open-diagnostics" title="Open Diagnostics">
+          ${ICON.externalLink}
+        </button>
+      </div>
+    </div>
+  `;
+
+  // Wire sidebar navigation
+  el.querySelectorAll("[data-nav]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.nav;
+      if (key === "settings") { showSettingsModal(); return; }
+      if (key.startsWith("srv-")) {
+        const sk = key.slice(4);
+        filterServer = filterServer === sk ? null : sk;
+        viewMode = "all";
+      } else if (key === "all") {
+        viewMode = "all"; filterServer = null;
+      } else if (key === "recent") {
+        viewMode = "recent"; filterServer = null;
+      } else if (key === "favorites") {
+        viewMode = "favorites"; filterServer = null;
+      } else if (key === "sessions") {
+        viewMode = "sessions"; filterServer = null;
+      } else if (key === "cli-tools") {
+        viewMode = "cli-tools"; filterServer = null;
+      } else if (key === "diagnostics") {
+        viewMode = "diagnostics"; filterServer = null;
+      } else if (key === "reauth") {
+        statusFilter = "reauth"; viewMode = "all"; filterServer = null;
+      }
+      render();
+    });
+  });
+
+  el.querySelector("#copy-support-bundle")?.addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/diagnostics", { headers });
+      const data = await res.json();
+      await navigator.clipboard.writeText(data.text || "No diagnostics available");
+      showToast("Support bundle copied to clipboard.");
+    } catch (err) {
+      showToast("Failed to copy diagnostics: " + err.message, "error");
+    }
+  });
+
+  el.querySelector("#open-diagnostics")?.addEventListener("click", () => {
+    viewMode = "diagnostics"; filterServer = null; render();
+  });
 }
 
-// ── Main render ───────────────────────────────────────────────────
+// ── Launch strip rendering ───────────────────────────────────────
+function renderLaunchStrip() {
+  const el = document.getElementById("launch-strip");
+  if (!el) return;
+
+  const activeCount = accounts.filter((a) => rowState(a) === "active").length;
+  const staleCount = accounts.filter((a) => rowState(a) === "stale").length;
+  const selCount = selectedIds.size;
+
+  if (launchInProgress && activeLaunch) {
+    const pct = batchQueue
+      ? Math.round(((batchQueue.current + 0.5) / batchQueue.ids.length) * 100)
+      : Math.round((activeLaunch.step / activeLaunch.totalSteps) * 100);
+    const batchLabel = batchQueue ? ` (${batchQueue.current + 1}/${batchQueue.ids.length})` : "";
+
+    el.innerHTML = `
+      <span class="strip__pill strip__pill--launching">
+        <span class="strip__pill-dot strip__pill-dot--launching"></span>
+        Launching${batchLabel}
+      </span>
+      <span class="strip__progress">
+        <span class="strip__progress-domain">${esc(activeLaunch.orgDomain)}</span>
+        <span class="strip__progress-meta">step ${activeLaunch.step}/${activeLaunch.totalSteps} · ${esc(activeLaunch.label || "starting")} · ${(pct / 20).toFixed(1)}s</span>
+        <span class="strip__progress-bar"><span class="strip__progress-fill" style="width:${pct}%"></span></span>
+        <span class="strip__progress-pct">${pct}%</span>
+      </span>
+      <span class="strip__counts">
+        ${selCount > 0 ? `<span>queue <strong>${selCount}</strong>/${accounts.length}</span><span class="strip__counts-sep"></span>` : ""}
+        ${activeCount > 0 ? `<span style="color:var(--st-state-active-fg);font-weight:600">● ${activeCount} active</span>` : ""}
+        ${staleCount > 0 ? `<span style="color:var(--st-state-stale-fg);font-weight:600">● ${staleCount} stale</span>` : ""}
+      </span>
+      <span class="strip__actions">
+        <button class="st-btn st-btn--ghost st-btn--sm" id="strip-log">View log</button>
+        <button class="st-btn st-btn--destructive st-btn--sm" id="strip-cancel">Cancel</button>
+      </span>
+    `;
+  } else if (batchCloseInProgress && batchCloseProgress) {
+    const pct = Math.round(((batchCloseProgress.current + 0.5) / batchCloseProgress.total) * 100);
+    el.innerHTML = `
+      <span class="strip__pill" style="background:var(--st-state-failed-bg);color:var(--st-state-failed-fg)">
+        <span class="strip__pill-dot" style="background:var(--st-state-failed-dot)"></span>
+        Closing
+      </span>
+      <span class="strip__progress">
+        <span class="strip__progress-meta">Closing ${batchCloseProgress.total} sessions…</span>
+        <span class="strip__progress-bar"><span class="strip__progress-fill" style="width:${pct}%;background:var(--st-state-failed-dot)"></span></span>
+        <span class="strip__progress-pct" style="color:var(--st-state-failed-fg)">${pct}%</span>
+      </span>
+    `;
+  } else if (selCount > 0) {
+    el.innerHTML = `
+      <span class="strip__pill" style="background:var(--st-state-queued-bg);color:var(--st-state-queued-fg)">
+        <span class="strip__pill-dot" style="background:var(--st-state-queued-dot)"></span>
+        Queue
+      </span>
+      <span class="strip__progress">
+        <span class="strip__progress-domain">${selCount} customer${selCount === 1 ? "" : "s"} selected</span>
+      </span>
+      <span class="strip__counts">
+        ${activeCount > 0 ? `<span style="color:var(--st-state-active-fg);font-weight:600">● ${activeCount} active</span>` : ""}
+        ${staleCount > 0 ? `<span style="color:var(--st-state-stale-fg);font-weight:600">● ${staleCount} stale</span>` : ""}
+      </span>
+      <span class="strip__actions">
+        <button class="st-btn st-btn--ghost st-btn--sm" id="strip-clear">Clear</button>
+        <button class="st-btn st-btn--primary st-btn--sm" id="strip-launch">${ICON.rocket} Launch (${selCount})</button>
+      </span>
+    `;
+    el.querySelector("#strip-clear")?.addEventListener("click", clearSelection);
+    el.querySelector("#strip-launch")?.addEventListener("click", launchBatchQueue);
+  } else {
+    el.innerHTML = `
+      <span class="strip__hints">
+        <span class="strip__hint"><kbd>Ctrl+K</kbd> search</span>
+        <span class="strip__hint"><kbd>Ctrl+A</kbd> select all</span>
+        <span class="strip__hint"><kbd>Enter</kbd> launch queue</span>
+      </span>
+      <span></span>
+      <span class="strip__counts">
+        ${activeCount > 0 ? `<span style="color:var(--st-state-active-fg);font-weight:600">● ${activeCount} active</span>` : ""}
+        ${staleCount > 0 ? `<span style="color:var(--st-state-stale-fg);font-weight:600">● ${staleCount} stale</span>` : ""}
+        ${activeCount === 0 && staleCount === 0 ? `<span>No active sessions</span>` : ""}
+      </span>
+      <span></span>
+    `;
+  }
+}
+
+// ── Row rendering ────────────────────────────────────────────────
+function renderRow(a) {
+  const state = rowState(a);
+  const checked = selectedIds.has(a.id);
+  const session = activeSessions.find((s) => s.accountId === a.id);
+  const si = serverInfo(a.serverKey);
+  const disabled = launchInProgress;
+
+  const badgeHtml = state !== "idle"
+    ? `<span class="st-badge st-badge--${state}"><span class="st-badge__dot"></span>${esc(ST_STATE_LABELS[state] || state)}</span>`
+    : `<span class="tbl__idle-dash">—</span>`;
+
+  let actionsHtml = "";
+  if (state === "active") {
+    actionsHtml = `
+      <button class="st-btn st-btn--primary st-btn--sm" data-row-action="switch" data-account-id="${esc(a.id)}">${ICON.desktop} Switch</button>
+      <button class="st-btn st-btn--destructive st-btn--sm" data-row-action="close-session" data-account-id="${esc(a.id)}" data-session-id="${esc(session?.sessionId || "")}">End</button>
+      <button class="st-kebab" data-row-action="more" data-account-id="${esc(a.id)}" title="More actions">${ICON.more}</button>
+    `;
+  } else if (state === "stale") {
+    actionsHtml = `
+      <button class="st-btn st-btn--stale st-btn--sm" data-row-action="launch" data-account-id="${esc(a.id)}">Relaunch</button>
+      <button class="st-btn st-btn--ghost st-btn--sm" data-row-action="close-session" data-account-id="${esc(a.id)}" data-session-id="${esc(session?.sessionId || "")}">Recover</button>
+      <button class="st-kebab" data-row-action="more" data-account-id="${esc(a.id)}" title="More actions">${ICON.more}</button>
+    `;
+  } else if (state === "reauth") {
+    actionsHtml = `
+      <button class="st-btn st-btn--reauth st-btn--sm" data-row-action="reauth" data-account-id="${esc(a.id)}">Re-authenticate</button>
+      <button class="st-kebab" data-row-action="more" data-account-id="${esc(a.id)}" title="More actions">${ICON.more}</button>
+    `;
+  } else if (state === "queued") {
+    actionsHtml = `
+      <button class="st-kebab" data-row-action="more" data-account-id="${esc(a.id)}" title="More actions">${ICON.more}</button>
+    `;
+  } else if (state === "launching") {
+    actionsHtml = `
+      <span class="st-badge st-badge--launching"><span class="st-badge__dot"></span>Launching…</span>
+    `;
+  } else {
+    actionsHtml = `
+      <button class="st-btn st-btn--primary st-btn--sm" data-row-action="launch" data-account-id="${esc(a.id)}" ${disabled ? "disabled" : ""}>${ICON.rocket} Launch</button>
+      <button class="st-kebab" data-row-action="more" data-account-id="${esc(a.id)}" title="More actions">${ICON.more}</button>
+    `;
+  }
+
+  const lastUsedHtml = (state === "active" || state === "stale") && session
+    ? `<span class="tbl__uptime">up ${sessionDuration(session.launchedAt)}</span>`
+    : esc(a.lastUsed || "");
+
+  return `
+    <div class="tbl__row" data-state="${state}" data-id="${esc(a.id)}">
+      <span>
+        <button class="st-check${checked ? " is-checked" : ""}" data-check-id="${esc(a.id)}">
+          <svg viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6l2.5 2.5 4.5-5"/></svg>
+        </button>
+      </span>
+      <span class="tbl__customer">
+        ${avatarHTML(a, state)}
+        <span class="tbl__customer-info">
+          <span class="tbl__customer-domain">${esc(a.orgDomain)}</span>
+          <span class="tbl__customer-email">${esc(a.email)}</span>
+        </span>
+      </span>
+      <span>${badgeHtml}</span>
+      <span class="tbl__identity">
+        <span class="tbl__identity-swatch" style="background:${si.color}"></span>
+        <span class="tbl__identity-key">${esc(si.key)}</span>
+        <span class="tbl__identity-host">${esc(si.label)}</span>
+      </span>
+      <span class="tbl__org-user">${esc(a.orgId || "")} · ${esc(a.userId || "")}</span>
+      <span class="tbl__last-used">${lastUsedHtml}</span>
+      <span class="tbl__actions">${actionsHtml}</span>
+    </div>
+  `;
+}
+
+// ── Skeleton ─────────────────────────────────────────────────────
+function renderSkeleton() {
+  return `
+    <div class="page-header">
+      <div class="page-header__breadcrumb st-mono">workspace / customers</div>
+      <div class="page-header__title-row">
+        <h1 class="page-header__title">Customers</h1>
+        <span class="page-header__meta">Loading…</span>
+      </div>
+    </div>
+    <div class="tbl__col-header">
+      <span></span><span>Customer</span><span>Status</span>
+      <span>Identity</span><span class="st-mono">Org · User</span>
+      <span>Last used</span><span style="text-align:right">Action</span>
+    </div>
+    ${Array.from({ length: 6 }, () => `
+      <div class="tbl__row" style="padding:12px 28px">
+        <span></span>
+        <span style="display:flex;align-items:center;gap:10px">
+          <span class="skel skel--circle"></span>
+          <span><span class="skel skel--text" style="width:${120 + Math.random() * 60}px"></span></span>
+        </span>
+        <span><span class="skel skel--pill"></span></span>
+        <span><span class="skel skel--text" style="width:80px"></span></span>
+        <span><span class="skel skel--text" style="width:60px"></span></span>
+        <span><span class="skel skel--text" style="width:50px"></span></span>
+        <span></span>
+      </div>
+    `).join("")}
+  `;
+}
+
+// ── Main render ──────────────────────────────────────────────────
 function render() {
   renderSidebar();
+  renderLaunchStrip();
   const main = document.getElementById("main-content");
 
   if (loading) {
@@ -1085,7 +1377,6 @@ function render() {
     return;
   }
 
-  // Prerequisites gate — show first-run screen if critical items missing
   const prereqs = classifyPrerequisites();
   if (prereqs.checked && prereqs.hasCritical) {
     main.innerHTML = renderFirstRun(prereqs);
@@ -1093,6 +1384,16 @@ function render() {
       await recheckHealth();
       render();
     });
+    return;
+  }
+
+  if (viewMode === "cli-tools") {
+    renderCliTools(main);
+    return;
+  }
+
+  if (viewMode === "diagnostics") {
+    renderDiagnostics(main);
     return;
   }
 
@@ -1109,27 +1410,25 @@ function render() {
   }
 
   const filtered = filterAccounts(accounts);
-  const groups = serverList
-    .map((s) => ({ s, rows: filtered.filter((a) => a.serverKey === s.key) }))
-    .filter((g) => g.rows.length);
-
   const selCount = selectedIds.size;
   const allChecked = filtered.length > 0 && filtered.every((a) => selectedIds.has(a.id));
+
+  const counts = {
+    active: accounts.filter((a) => rowState(a) === "active").length,
+    stale: accounts.filter((a) => rowState(a) === "stale").length,
+    reauth: accounts.filter((a) => rowState(a) === "reauth").length,
+    idle: accounts.filter((a) => rowState(a) === "idle").length,
+  };
 
   const pageTitle = viewMode === "sessions" ? "Active sessions"
     : viewMode === "recent" ? "Recently launched"
     : viewMode === "favorites" ? "Favorites"
     : filterServer ? esc(filterServer) + " customers"
-    : "All customers";
+    : "Customers";
 
   main.innerHTML = `
-    <div class="crumbs">
-      <a href="#">Home</a>
-      <span class="sep">/</span>
-      <a href="#" class="is-current">${pageTitle}</a>
-    </div>
-
     ${warningHtml}
+
     ${launchErrors.map((err) => `
       <div class="launch-error-card">
         <div class="launch-error-card__body">
@@ -1140,104 +1439,84 @@ function render() {
           </div>
         </div>
         <div class="launch-error-card__actions">
-          <button class="btn btn--sm btn--primary" data-retry-launch="${esc(err.accountId)}">Retry</button>
-          <button class="btn btn--sm btn--ghost" data-dismiss-error="${esc(err.accountId)}">Dismiss</button>
+          <button class="st-btn st-btn--primary st-btn--sm" data-retry-launch="${esc(err.accountId)}">Retry</button>
+          <button class="st-btn st-btn--ghost st-btn--sm" data-dismiss-error="${esc(err.accountId)}">Dismiss</button>
         </div>
       </div>
     `).join("")}
 
-    <div class="page-head">
-      <div>
-        <h1>${pageTitle}<span class="count">${filtered.length}</span></h1>
-        <div class="sub">${viewMode === "sessions" && filtered.length === 0 ? "No active sessions — launch a customer to get started"
-          : viewMode === "recent" && filtered.length === 0 ? "Launch a customer to see them here"
-          : viewMode === "favorites" && filtered.length === 0 ? "Star a customer to add them to favorites"
-          : `${groups.length} server${groups.length === 1 ? "" : "s"} · last refreshed ${timeAgo(lastRefreshedAt)}`}</div>
+    <div class="page-header">
+      <div class="page-header__breadcrumb st-mono">workspace / customers</div>
+      <div class="page-header__title-row">
+        <h1 class="page-header__title">${pageTitle}</h1>
+        <span class="page-header__meta">${filtered.length} accounts · ${serverList.length} servers · last sync ${timeAgo(lastRefreshedAt)}</span>
       </div>
-      <div class="page-head__actions">
-        <button class="btn btn--ghost" id="head-refresh">${ICON.refresh} Refresh</button>
-        ${activeSessions.length > 0 ? `
-          <button class="btn btn--danger" id="close-all-sessions"${batchCloseInProgress ? " disabled" : ""}>${ICON.stop} Close all (${activeSessions.length})</button>
-        ` : ""}
-        <button class="btn btn--primary" id="head-auth">${ICON.plus} Authenticate customer</button>
+      <div class="page-header__actions">
+        <button class="st-btn st-btn--ghost" id="head-sort">${ICON.filter} Sort · ${sortMode === "az" ? "A–Z" : sortMode === "server" ? "Server" : "last used"} ${ICON.chev}</button>
+        <span class="page-header__sep"></span>
+        <button class="st-btn st-btn--primary" id="head-auth">${ICON.plus} Authenticate customer</button>
       </div>
     </div>
 
-    ${batchCloseInProgress ? renderCloseProgressBanner() : activeLaunch ? renderLaunchBanner() : ""}
-
-    ${selCount > 0 ? (viewMode === "sessions" ? `
-      <div class="batch-bar batch-bar--danger">
-        <div class="batch-bar__top">
-          <span class="batch-bar__count">${selCount} session${selCount === 1 ? "" : "s"} selected</span>
-          <div class="batch-bar__actions">
-            <button class="batch-bar__clear" id="batch-clear">Clear selection</button>
-            <button class="batch-bar__launch batch-bar__launch--danger" id="batch-close"${batchCloseInProgress ? " disabled" : ""}>
-              ${ICON.stop} Close selected (${selCount})
-            </button>
-          </div>
-        </div>
-      </div>
-    ` : `
-      <div class="batch-bar">
-        <div class="batch-bar__top">
-          <span class="batch-bar__count">${selCount} customer${selCount === 1 ? "" : "s"} selected</span>
-          <div class="batch-bar__actions">
-            <button class="batch-bar__clear" id="batch-clear">Clear selection</button>
-            <button class="batch-bar__launch" id="batch-launch"${launchInProgress ? " disabled" : ""}>
-              ${ICON.rocket} Launch Queue (${selCount})
-            </button>
-          </div>
-        </div>
-        <div class="batch-list" id="batch-list">
-          ${batchOrder.map((id, idx) => {
-            const ba = accounts.find((x) => x.id === id);
-            if (!ba) return "";
-            const si = serverInfo(ba.serverKey);
-            return `<div class="batch-item" draggable="true" data-batch-idx="${idx}">
-              <span class="grip-handle">${ICON.grip}</span>
-              <span class="batch-item__num">${idx + 1}</span>
-              <span class="avatar avatar--sm" style="background:linear-gradient(135deg,${avatarColor(ba)} 0%,${shadeHex(avatarColor(ba), -18)} 100%)">${esc(initialsOf(ba))}</span>
-              <span class="batch-item__domain">${esc(ba.orgDomain)}</span>
-              <span class="server-pill server-pill--${esc(si.key)}" style="background:${si.soft};color:${si.text}"><span class="server-pill__dot" style="background:${si.color}"></span>${esc(si.key)}</span>
-              <button class="batch-item__remove" data-batch-remove="${esc(id)}" title="Remove">${ICON.x}</button>
-            </div>`;
-          }).join("")}
-        </div>
-      </div>
-    `) : ""}
-
-    <div class="filters">
-      <button class="chip ${filterServer === null ? "is-active" : ""}" data-filter="">
-        All <span class="chip__count">${accounts.length}</span>
+    <div class="filter-strip">
+      <span class="filter-strip__label">Show</span>
+      <button class="st-chip${statusFilter === "all" ? " is-active" : ""}" data-status-filter="all">
+        All <span class="st-chip__count">${accounts.length}</span>
       </button>
-      <button class="chip" id="filter-chip">${ICON.filter} Filter</button>
-      <button class="chip" id="sort-chip">Sort: ${sortMode === "az" ? "A–Z" : sortMode === "server" ? "Server" : "Last used"} ${ICON.chev}</button>
-      <span class="grow">${filtered.length} of ${accounts.length}</span>
+      <button class="st-chip${statusFilter === "active" ? " is-active" : ""}" data-status-filter="active">
+        <span class="st-chip__dot" style="background:var(--st-state-active-dot)"></span>
+        Active <span class="st-chip__count">${counts.active}</span>
+      </button>
+      <button class="st-chip${statusFilter === "stale" ? " is-active" : ""}" data-status-filter="stale">
+        <span class="st-chip__dot" style="background:var(--st-state-stale-dot)"></span>
+        Stale <span class="st-chip__count">${counts.stale}</span>
+      </button>
+      <button class="st-chip${statusFilter === "reauth" ? " is-active" : ""}" data-status-filter="reauth">
+        <span class="st-chip__dot" style="background:var(--st-state-reauth-dot)"></span>
+        Needs re-auth <span class="st-chip__count">${counts.reauth}</span>
+      </button>
+      <button class="st-chip${statusFilter === "idle" ? " is-active" : ""}" data-status-filter="idle">
+        Idle <span class="st-chip__count">${counts.idle}</span>
+      </button>
     </div>
 
-    <div class="panel">
-      <div class="tbl__header">
-        <div>
-          <button class="tbl__check${allChecked ? " is-checked" : ""}" id="check-all" title="Select all">
-            <svg viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6l2.5 2.5 4.5-5"/></svg>
-          </button>
-        </div>
-        <div></div>
-        <div class="tbl__sortable">Customer ${ICON.chev}</div>
-        <div>Account</div>
-        <div>Server</div>
-        <div class="tbl__sortable">Last used ${ICON.chev}</div>
-        <div style="text-align:right">Actions</div>
-      </div>
-      ${groups.map((g, gi) => renderGroup(g, gi === groups.length - 1)).join("")}
+    <div class="tbl__col-header">
+      <span>
+        <button class="st-check${allChecked ? " is-checked" : ""}" id="check-all" title="Select all">
+          <svg viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6l2.5 2.5 4.5-5"/></svg>
+        </button>
+      </span>
+      <span>Customer</span>
+      <span>Status</span>
+      <span>Identity</span>
+      <span class="st-mono">Org · User</span>
+      <span>Last used</span>
+      <span style="text-align:right">Action</span>
     </div>
+
+    <div id="rows-container">
+      ${filtered.map((a) => renderRow(a)).join("")}
+    </div>
+
+    ${filtered.length === 0 && accounts.length > 0 ? `
+      <div class="st-empty" style="padding:60px 28px">
+        <h2>No matching customers</h2>
+        <p>Try adjusting your search or filter.</p>
+      </div>
+    ` : ""}
   `;
 
-  // Wire up actions.
-  main.querySelector("#head-refresh")?.addEventListener("click", () => fetchAccounts(true));
-  main.querySelector("#filter-chip")?.addEventListener("click", (e) => showFilterDropdown(e.currentTarget, e));
-  main.querySelector("#sort-chip")?.addEventListener("click", (e) => showSortDropdown(e.currentTarget, e));
+  // Wire events
   main.querySelector("#head-auth")?.addEventListener("click", showAuthModal);
+  main.querySelector("#head-sort")?.addEventListener("click", (e) => showSortDropdown(e.currentTarget, e));
+
+  main.querySelectorAll("[data-status-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      statusFilter = btn.dataset.statusFilter;
+      render();
+    });
+  });
+
   main.querySelectorAll("[data-retry-launch]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const acct = accounts.find((a) => a.id === btn.dataset.retryLaunch);
@@ -1254,13 +1533,7 @@ function render() {
       render();
     });
   });
-  main.querySelector("#close-all-sessions")?.addEventListener("click", () => {
-    showBatchCloseConfirmation(activeSessions);
-  });
-  main.querySelector("#batch-close")?.addEventListener("click", () => {
-    const selected = activeSessions.filter(s => selectedIds.has(s.accountId));
-    if (selected.length > 0) showBatchCloseConfirmation(selected);
-  });
+
   main.querySelectorAll("[data-row-action]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       if (btn.disabled || btn.classList.contains("is-disabled")) return;
@@ -1268,8 +1541,15 @@ function render() {
       const acct = accounts.find((a) => a.id === id);
       if (!acct) return;
       if (btn.dataset.rowAction === "launch") launchCustomer(acct);
+      if (btn.dataset.rowAction === "switch") {
+        const sess = activeSessions.find((s) => s.accountId === acct.id);
+        if (sess?.desktopName) {
+          fetch("/api/switch-desktop", { method: "POST", headers, body: JSON.stringify({ name: sess.desktopName }) });
+        }
+      }
       if (btn.dataset.rowAction === "copy") copyInstruction(acct);
       if (btn.dataset.rowAction === "favorite") toggleFavorite(id);
+      if (btn.dataset.rowAction === "reauth") startLogin(acct.serverKey);
       if (btn.dataset.rowAction === "more") { e.stopPropagation(); showMoreActionsMenu(btn, acct, e); }
       if (btn.dataset.rowAction === "close-session") {
         const sess = activeSessions.find((s) => s.sessionId === btn.dataset.sessionId);
@@ -1278,180 +1558,15 @@ function render() {
     });
   });
 
-  // Collapsible group headers.
-  main.querySelectorAll("[data-server-toggle]").forEach((btn) => {
-    btn.addEventListener("click", () => toggleCollapse(btn.dataset.serverToggle));
-  });
-
-  // Batch selection wiring.
   main.querySelector("#check-all")?.addEventListener("click", () => toggleSelectAll(filtered));
   main.querySelectorAll("[data-check-id]").forEach((btn) => {
     btn.addEventListener("click", (e) => { e.stopPropagation(); toggleSelect(btn.dataset.checkId); });
   });
-  main.querySelector("#batch-launch")?.addEventListener("click", launchBatchQueue);
-  main.querySelector("#batch-clear")?.addEventListener("click", clearSelection);
+
   wirePrereqBanner(main);
-
-  // Batch remove buttons.
-  main.querySelectorAll("[data-batch-remove]").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const id = btn.dataset.batchRemove;
-      selectedIds.delete(id);
-      batchOrder = batchOrder.filter((x) => x !== id);
-      render();
-    });
-  });
-
-  // Batch drag-to-reorder.
-  const batchList = main.querySelector("#batch-list");
-  if (batchList) {
-    batchList.addEventListener("dragstart", (e) => {
-      const item = e.target.closest("[data-batch-idx]");
-      if (!item) return;
-      dragIdx = parseInt(item.dataset.batchIdx, 10);
-      item.classList.add("is-dragging");
-      e.dataTransfer.effectAllowed = "move";
-    });
-    batchList.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      const item = e.target.closest("[data-batch-idx]");
-      batchList.querySelectorAll(".batch-item").forEach((el) => el.classList.remove("is-drag-over"));
-      if (item) item.classList.add("is-drag-over");
-    });
-    batchList.addEventListener("drop", (e) => {
-      e.preventDefault();
-      const item = e.target.closest("[data-batch-idx]");
-      if (!item || dragIdx === null) return;
-      const dropIdx = parseInt(item.dataset.batchIdx, 10);
-      if (dragIdx !== dropIdx) {
-        const [moved] = batchOrder.splice(dragIdx, 1);
-        batchOrder.splice(dropIdx, 0, moved);
-      }
-      dragIdx = null;
-      render();
-    });
-    batchList.addEventListener("dragend", () => {
-      dragIdx = null;
-      batchList.querySelectorAll(".batch-item").forEach((el) => {
-        el.classList.remove("is-dragging", "is-drag-over");
-      });
-    });
-  }
 }
 
-function renderGroup(g, isLast) {
-  const collapsed = collapsedServers.has(g.s.key);
-  return `
-    <div class="tbl__group">
-      <button class="tbl__group-btn" data-server-toggle="${esc(g.s.key)}" aria-expanded="${!collapsed}">
-        <span class="tbl__group-chevron${collapsed ? " is-collapsed" : ""}">${ICON.chev}</span>
-        <span class="tbl__group-dot" style="background:${g.s.color}"></span>
-        <span class="tbl__group-key">${esc(g.s.key)}</span>
-        <span class="tbl__group-host">${esc(g.s.label)}</span>
-        <span class="tbl__group-count">${g.rows.length} customer${g.rows.length === 1 ? "" : "s"}</span>
-      </button>
-    </div>
-    ${collapsed ? "" : g.rows.map((a, i) => renderRow(a, i === g.rows.length - 1 && isLast)).join("")}
-  `;
-}
-
-function renderRow(a, isLast) {
-  const disabled = launchInProgress;
-  const checked = selectedIds.has(a.id);
-  const session = activeSessions.find((s) => s.accountId === a.id);
-  const hasSession = !!session;
-  const isStale = hasSession && session.status === "stale";
-  return `
-    <div class="tbl__row${checked ? " is-selected" : ""}${hasSession ? " has-session" : ""}${isStale ? " is-stale" : ""}" data-id="${esc(a.id)}" style="${isLast ? "border-bottom:none" : ""}">
-      <button class="tbl__check${checked ? " is-checked" : ""}" data-check-id="${esc(a.id)}">
-        <svg viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6l2.5 2.5 4.5-5"/></svg>
-      </button>
-      <div class="avatar-wrap">
-        ${avatarHTML(a)}
-        ${hasSession ? `<span class="session-dot${isStale ? " session-dot--stale" : ""}"></span>` : ""}
-      </div>
-      <div style="min-width:0">
-        <div class="tbl__org">${esc(a.orgDomain)}</div>
-        ${a.orgId ? `<div class="tbl__meta">org ${esc(a.orgId)}${a.userId ? ` · user ${esc(a.userId)}` : ""}</div>` : ""}
-      </div>
-      <div class="tbl__email">${esc(a.email)}</div>
-      <div>${serverPillHTML(a.serverKey)}</div>
-      <div class="tbl__lastused">
-        ${hasSession ? sessionDuration(session.launchedAt) : (a.lastUsed ? esc(a.lastUsed) : "")}
-        ${isStale ? `<span class="badge badge--stale" title="Process may have exited">Stale</span>` : ""}
-      </div>
-      <div class="tbl__actions">
-        <button class="btn-fav${favoriteIds.has(a.id) ? " is-active" : ""}" data-row-action="favorite" data-account-id="${esc(a.id)}" title="${favoriteIds.has(a.id) ? "Remove from favorites" : "Add to favorites"}">
-          ${favoriteIds.has(a.id) ? ICON.starFilled : ICON.star}
-        </button>
-        ${hasSession ? `
-          <button class="btn ${isStale ? "btn--warn" : "btn--danger"} btn--sm" data-row-action="close-session" data-account-id="${esc(a.id)}" data-session-id="${esc(session.sessionId)}">
-            ${ICON.stop} ${isStale ? "Force close" : "Close"}
-          </button>
-        ` : `
-          <div class="btn-split${disabled ? " is-disabled" : ""}">
-            <button class="btn-split__main" data-row-action="launch" data-account-id="${esc(a.id)}" ${disabled ? "disabled" : ""}>
-              ${ICON.rocket}
-              ${launchInProgress && activeLaunch?.orgDomain === a.orgDomain ? "Launching…" : "Launch"}
-            </button>
-            ${!disabled ? `<button class="btn-split__caret" data-row-action="launch" data-account-id="${esc(a.id)}" title="Launch options">${ICON.chev}</button>` : ""}
-          </div>
-        `}
-        <button class="btn-icon" data-row-action="copy" data-account-id="${esc(a.id)}" title="Copy CLI flags">
-          ${ICON.copy}
-        </button>
-        <button class="btn-icon" data-row-action="more" data-account-id="${esc(a.id)}" title="More actions">${ICON.more}</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderLaunchBanner() {
-  const s = serverInfo(activeLaunch.serverKey);
-  const batchLabel = batchQueue ? ` (${batchQueue.current + 1} of ${batchQueue.ids.length})` : "";
-  const pct = batchQueue
-    ? Math.round(((batchQueue.current + 0.5) / batchQueue.ids.length) * 100)
-    : Math.round((activeLaunch.step / activeLaunch.totalSteps) * 100);
-  return `
-    <div class="launch-banner">
-      <div class="launch-banner__chip"></div>
-      <div style="flex:1; min-width:0">
-        <div class="launch-banner__title">
-          ${batchQueue ? "Queue in progress" : "Launch in progress"}${batchLabel}
-          <span class="server-pill" style="background:${s.soft};color:${s.text}">
-            <span class="server-pill__dot" style="background:${s.color}"></span>${esc(s.key)}
-          </span>
-          <span style="color:var(--dr-text-secondary); font-weight:500">${esc(activeLaunch.orgDomain)}</span>
-        </div>
-        <div class="launch-banner__sub">
-          ${batchQueue
-            ? `Launching customer ${batchQueue.current + 1} of ${batchQueue.ids.length}… ${activeLaunch.label ? "— " + esc(activeLaunch.label) : ""}`
-            : `${activeLaunch.label || "Launching"} — step ${activeLaunch.step} of ${activeLaunch.totalSteps}`}
-        </div>
-      </div>
-      <div class="launch-banner__bar"><div style="width:${pct}%"></div></div>
-    </div>
-  `;
-}
-
-function renderCloseProgressBanner() {
-  if (!batchCloseProgress) return "";
-  const pct = Math.round(((batchCloseProgress.current + 0.5) / batchCloseProgress.total) * 100);
-  return `
-    <div class="launch-banner launch-banner--danger">
-      <div class="launch-banner__chip"></div>
-      <div style="flex:1; min-width:0">
-        <div class="launch-banner__title">Closing sessions</div>
-        <div class="launch-banner__sub">Closing ${batchCloseProgress.total} session${batchCloseProgress.total === 1 ? "" : "s"}…</div>
-      </div>
-      <div class="launch-banner__bar"><div style="width:${pct}%"></div></div>
-    </div>`;
-}
-
-// ── Prerequisites classification & first-run UX ─────────────────
-
+// ── Prerequisites ────────────────────────────────────────────────
 function classifyPrerequisites() {
   if (!healthChecks) return { checked: false, critical: [], warnings: [], hasCritical: false, hasWarnings: false };
 
@@ -1552,25 +1667,19 @@ function prereqItemHtml(item) {
 function renderFirstRun(prereqs) {
   const allItems = buildPrereqAllItems();
   return `
-    <div class="crumbs">
-      <a href="#">Home</a>
-      <span class="sep">/</span>
-      <a href="#" class="is-current">Setup</a>
+    <div class="page-header">
+      <div class="page-header__breadcrumb st-mono">setup</div>
+      <div class="page-header__title-row">
+        <h1 class="page-header__title">Set up your environment</h1>
+      </div>
     </div>
     <div class="prereq-screen">
-      <svg width="160" height="120" viewBox="0 0 180 120" fill="none" aria-hidden>
-        <rect x="30" y="20" width="120" height="80" rx="8" fill="#fff" stroke="#DFE0E3" stroke-width="1.5"/>
-        <path d="M55 55 l10 10 l20-20" stroke="#03A678" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <rect x="100" y="50" width="30" height="4" rx="2" fill="#DFE0E3"/>
-        <rect x="100" y="60" width="20" height="4" rx="2" fill="#DFE0E3"/>
-      </svg>
-      <h2>Set up your environment</h2>
       <p>DR Launcher needs a few tools to work. Install the missing items below, then click Re-check.</p>
       <div class="prereq-list">
         ${allItems.map(prereqItemHtml).join("")}
       </div>
       <div class="prereq-actions">
-        <button class="btn btn--primary" id="prereq-recheck">${ICON.refresh} Re-check</button>
+        <button class="st-btn st-btn--primary" id="prereq-recheck">${ICON.refresh} Re-check</button>
       </div>
     </div>`;
 }
@@ -1582,8 +1691,8 @@ function renderPrereqWarnings(prereqs) {
       <span class="prereq-banner__icon">${ICON.alertTriangle}</span>
       <span class="prereq-banner__text">Some optional tools are missing: ${esc(labels)}.</span>
       <span class="prereq-banner__actions">
-        <button class="btn btn--sm" id="prereq-banner-recheck">${ICON.refresh} Re-check</button>
-        <button class="btn btn--sm btn--ghost" id="prereq-banner-dismiss">${ICON.x} Dismiss</button>
+        <button class="st-btn st-btn--sm" id="prereq-banner-recheck">${ICON.refresh} Re-check</button>
+        <button class="st-btn st-btn--ghost st-btn--sm" id="prereq-banner-dismiss">${ICON.x} Dismiss</button>
       </span>
     </div>`;
 }
@@ -1601,42 +1710,80 @@ function wirePrereqBanner(container) {
 
 function renderEmpty() {
   return `
-    <div class="crumbs">
-      <a href="#">Home</a>
-      <span class="sep">/</span>
-      <a href="#" class="is-current">All customers</a>
-    </div>
-    <div class="page-head">
-      <div>
-        <h1>All customers<span class="count">0</span></h1>
-        <div class="sub">No customers authenticated on this machine yet.</div>
+    <div class="page-header">
+      <div class="page-header__breadcrumb st-mono">workspace / customers</div>
+      <div class="page-header__title-row">
+        <h1 class="page-header__title">Customers</h1>
+        <span class="page-header__meta">No customers authenticated yet</span>
       </div>
     </div>
-    <div class="empty">
+    <div class="st-empty">
       <svg width="160" height="120" viewBox="0 0 180 120" fill="none" aria-hidden>
-        <rect x="20" y="20" width="120" height="20" rx="10" fill="#fff" stroke="#DFE0E3" stroke-width="1.5" stroke-dasharray="3 4" />
-        <rect x="20" y="50" width="120" height="20" rx="10" fill="#fff" stroke="#DFE0E3" stroke-width="1.5" stroke-dasharray="3 4" />
-        <rect x="20" y="80" width="120" height="20" rx="10" fill="#fff" stroke="#DFE0E3" stroke-width="1.5" stroke-dasharray="3 4" />
+        <rect x="20" y="20" width="120" height="20" rx="10" fill="var(--st-panel)" stroke="var(--st-hair)" stroke-width="1.5" stroke-dasharray="3 4" />
+        <rect x="20" y="50" width="120" height="20" rx="10" fill="var(--st-panel)" stroke="var(--st-hair)" stroke-width="1.5" stroke-dasharray="3 4" />
+        <rect x="20" y="80" width="120" height="20" rx="10" fill="var(--st-panel)" stroke="var(--st-hair)" stroke-width="1.5" stroke-dasharray="3 4" />
         <circle cx="32" cy="30" r="4.5" fill="#4646CE" />
         <circle cx="32" cy="60" r="4.5" fill="#F93576" />
         <circle cx="32" cy="90" r="4.5" fill="#FFA310" />
-        <line x1="46" y1="30" x2="115" y2="30" stroke="#DFE0E3" stroke-width="2" stroke-linecap="round" />
-        <line x1="46" y1="60" x2="100" y2="60" stroke="#DFE0E3" stroke-width="2" stroke-linecap="round" />
-        <line x1="46" y1="90" x2="108" y2="90" stroke="#DFE0E3" stroke-width="2" stroke-linecap="round" />
+        <line x1="46" y1="30" x2="115" y2="30" stroke="var(--st-hair)" stroke-width="2" stroke-linecap="round" />
+        <line x1="46" y1="60" x2="100" y2="60" stroke="var(--st-hair)" stroke-width="2" stroke-linecap="round" />
+        <line x1="46" y1="90" x2="108" y2="90" stroke="var(--st-hair)" stroke-width="2" stroke-linecap="round" />
       </svg>
       <h2>Welcome to DR Launcher</h2>
       <p>DR Launcher opens isolated Chrome + Claude Code sessions for each customer account, keeping your work separated. Authenticate a customer below to get started.</p>
-      <div class="empty__servers">
+      <div class="st-empty__servers">
         ${serverList.map((s) => `
-          <button class="empty__server" data-empty-server="${esc(s.key)}">
-            <span class="server-pill__dot" style="background:${s.color}"></span>
+          <button class="st-empty__server" data-empty-server="${esc(s.key)}">
+            <span class="st-empty__server-dot" style="background:${s.color}"></span>
             Connect via ${esc(s.key)}
-            <span class="empty__server-host">${esc(s.label)}</span>
+            <span class="st-empty__server-host">${esc(s.label)}</span>
           </button>
         `).join("")}
       </div>
     </div>
   `;
+}
+
+// ── Diagnostics view ─────────────────────────────────────────────
+function renderDiagnostics(main) {
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header__breadcrumb st-mono">tools / diagnostics</div>
+      <div class="page-header__title-row">
+        <h1 class="page-header__title">Diagnostics</h1>
+        <span class="page-header__meta">System health and environment info</span>
+      </div>
+      <div class="page-header__actions">
+        <button class="st-btn st-btn--ghost" id="diag-recheck">${ICON.refresh} Re-check</button>
+        <button class="st-btn st-btn--primary" id="diag-copy">${ICON.copy} Copy support bundle</button>
+      </div>
+    </div>
+    <div class="diag-grid">
+      <div class="diag-card">
+        <div class="diag-card__head"><span class="diag-card__title">System health</span></div>
+        <div class="diag-card__body">${buildSettingsHealthRows()}</div>
+      </div>
+    </div>
+  `;
+
+  main.querySelector("#diag-recheck")?.addEventListener("click", async () => {
+    await recheckHealth();
+    renderDiagnostics(main);
+    showToast("Health check complete.");
+  });
+  main.querySelector("#diag-copy")?.addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/diagnostics", { headers });
+      const data = await res.json();
+      await navigator.clipboard.writeText(data.text || "No diagnostics available");
+      showToast("Support bundle copied to clipboard.");
+    } catch (err) {
+      showToast("Failed to copy diagnostics: " + err.message, "error");
+    }
+  });
+  main.querySelector(".crumb-home")?.addEventListener("click", (e) => {
+    e.preventDefault(); viewMode = "all"; render();
+  });
 }
 
 // ── Dropdown menus ──────────────────────────────────────────────
@@ -1677,17 +1824,6 @@ function closeDropdown() {
 }
 function dropdownEsc(e) { if (e.key === "Escape") closeDropdown(); }
 
-function showFilterDropdown(anchor, evt) {
-  const items = [
-    { label: "All servers", action() { filterServer = null; render(); } },
-    ...serverList.map((s) => ({
-      label: `${s.key} — ${s.label}`,
-      action() { filterServer = s.key; render(); },
-    })),
-  ];
-  showDropdown(anchor, items, evt);
-}
-
 function showSortDropdown(anchor, evt) {
   showDropdown(anchor, [
     { label: "Last used", action() { sortMode = "lastUsed"; render(); } },
@@ -1699,7 +1835,9 @@ function showSortDropdown(anchor, evt) {
 function showMoreActionsMenu(anchor, acct, evt) {
   const items = [
     { label: "Copy CLI flags", action() { copyInstruction(acct); } },
-    { label: "Open in browser", action() { window.open(acct.serverHost || serverInfo(acct.serverKey).host, "_blank"); } },
+    { label: favoriteIds.has(acct.id) ? "Remove from favorites" : "Add to favorites", action() { toggleFavorite(acct.id); } },
+    "---",
+    { label: "Open in browser", action() { window.open(acct.serverHost || serverInfo(acct.serverKey).label, "_blank"); } },
   ];
   const wsSlug = workspace_slug(acct.serverKey, acct.orgId, acct.orgDomain);
   if (healthChecks?.workspaceRoot?.path) {
@@ -1715,7 +1853,7 @@ function workspace_slug(serverKey, orgId, orgDomain) {
   return `${(serverKey || "").toLowerCase()}-${orgId || "0"}-${domain}`;
 }
 
-// ── Modals (auth picker, settings, instruction fallback) ─────────
+// ── Modals ───────────────────────────────────────────────────────
 function showToast(message, level, opts = {}) {
   const tray = document.getElementById("toasts");
   if (!tray) return;
@@ -1773,11 +1911,11 @@ function showInstructionModal(instruction, domain, workspacePath) {
       </div>
       <div class="modal__body">
         <textarea class="instruction-textarea" readonly>${esc(instruction)}</textarea>
-        ${workspacePath ? `<div style="font-size:12px;color:var(--dr-text-secondary);margin-top:8px">Workspace: <code style="font-family:var(--dr-font-mono);color:var(--dr-text-body)">${esc(workspacePath)}</code></div>` : ""}
+        ${workspacePath ? `<div style="font-size:12px;color:var(--st-ink-muted);margin-top:8px">Workspace: <code style="font-family:'JetBrains Mono',monospace;color:var(--st-ink)">${esc(workspacePath)}</code></div>` : ""}
       </div>
       <div class="modal__foot">
         <span></span>
-        <button class="btn btn--primary" data-modal-close>Done</button>
+        <button class="st-btn st-btn--primary" data-modal-close>Done</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -1803,15 +1941,15 @@ function showFirstLaunchModal(data) {
       <div class="modal__body" style="font-size:14px;line-height:1.7">
         <ul style="padding-left:20px;margin:0">
           <li><strong>Chrome</strong> opened with an isolated profile — cookies and sessions won't leak between customers</li>
-          <li>A <strong>workspace</strong> was created at <code style="font-family:var(--dr-font-mono);font-size:12px">${esc(wsPath)}</code></li>
+          <li>A <strong>workspace</strong> was created at <code style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(wsPath)}</code></li>
           <li><strong>CLAUDE.md</strong> in that workspace auto-configures Claude with this customer's context</li>
           <li>A <strong>terminal</strong> opened with Claude Code scoped to that workspace</li>
           ${hasVD ? `<li>Everything was moved to its own <strong>virtual desktop</strong> — use <kbd>Ctrl+Win+Arrow</kbd> to switch</li>` : ""}
         </ul>
       </div>
       <div class="modal__foot">
-        <span style="font-size:12px;color:var(--dr-text-secondary)">This message only appears once.</span>
-        <button class="btn btn--primary" data-modal-close>Got it</button>
+        <span style="font-size:12px;color:var(--st-ink-muted)">This message only appears once.</span>
+        <button class="st-btn st-btn--primary" data-modal-close>Got it</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -1825,25 +1963,23 @@ function showHelpModal() {
   overlay.innerHTML = `
     <div class="modal" style="width:560px">
       <div class="modal__head">
-        <div>
-          <h2>DR Launcher Quick Guide</h2>
-        </div>
+        <div><h2>DR Launcher Quick Guide</h2></div>
         <button class="modal__close" aria-label="Close">${ICON.x}</button>
       </div>
       <div class="modal__body" style="font-size:14px;line-height:1.7">
         <dl style="margin:0">
           <dt style="font-weight:600;margin-top:8px">Launch</dt>
-          <dd style="margin-left:0;color:var(--dr-text-secondary)">Opens isolated Chrome + Claude Code terminal per customer</dd>
+          <dd style="margin-left:0;color:var(--st-ink-muted)">Opens isolated Chrome + Claude Code terminal per customer</dd>
           <dt style="font-weight:600;margin-top:8px">Workspaces</dt>
-          <dd style="margin-left:0;color:var(--dr-text-secondary)"><code style="font-family:var(--dr-font-mono);font-size:12px">${esc(wsRoot)}/&lt;server-orgid-domain&gt;/</code></dd>
+          <dd style="margin-left:0;color:var(--st-ink-muted)"><code style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(wsRoot)}/&lt;server-orgid-domain&gt;/</code></dd>
           <dt style="font-weight:600;margin-top:8px">CLAUDE.md</dt>
-          <dd style="margin-left:0;color:var(--dr-text-secondary)">Auto-configures Claude with customer context (server, account, CLI flags)</dd>
+          <dd style="margin-left:0;color:var(--st-ink-muted)">Auto-configures Claude with customer context (server, account, CLI flags)</dd>
           <dt style="font-weight:600;margin-top:8px">Virtual desktops</dt>
-          <dd style="margin-left:0;color:var(--dr-text-secondary)">Optional — each launch gets its own Windows desktop (<kbd>Ctrl+Win+Arrow</kbd> to switch)</dd>
+          <dd style="margin-left:0;color:var(--st-ink-muted)">Optional — each launch gets its own Windows desktop (<kbd>Ctrl+Win+Arrow</kbd> to switch)</dd>
         </dl>
-        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--dr-border)">
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--st-hair)">
           <div style="font-weight:600;margin-bottom:4px">Keyboard shortcuts</div>
-          <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13px;color:var(--dr-text-secondary)">
+          <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13px;color:var(--st-ink-muted)">
             <kbd>Ctrl+K</kbd><span>Focus search</span>
             <kbd>Ctrl+A</kbd><span>Select all visible</span>
             <kbd>Escape</kbd><span>Close modal / clear search</span>
@@ -1852,7 +1988,7 @@ function showHelpModal() {
       </div>
       <div class="modal__foot">
         <span></span>
-        <button class="btn btn--primary" data-modal-close>Close</button>
+        <button class="st-btn st-btn--primary" data-modal-close>Close</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -1898,10 +2034,194 @@ function showAuthModal() {
   wireModalClose(overlay);
 }
 
+// ── DR CLI tools page ────────────────────────────────────────────
+let cliInstallES = null;
+let cliInstallOutput = "";
+
+function renderCliTools(main) {
+  const drFound = healthChecks?.dr?.found;
+  const installing = !!cliInstallES;
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header__breadcrumb st-mono">tools / dr cli</div>
+      <div class="page-header__title-row">
+        <h1 class="page-header__title">DR CLI</h1>
+        <span class="page-header__meta">Install, update, and manage the Datarails command-line interface</span>
+      </div>
+    </div>
+    <div class="cli-tools-grid">
+      <div class="settings-card cli-tools-card">
+        <div class="cli-tools-card__head">
+          <div>
+            <div class="cli-tools-card__title">Install / Update</div>
+            <div class="cli-tools-card__hint" id="cli-version-info">${drFound ? "Checking version…" : "Not installed"}</div>
+          </div>
+          <button class="st-btn st-btn--primary" id="cli-install-btn"${installing ? " disabled" : ""}>
+            ${installing ? "Installing…" : (drFound ? ICON.refresh + " Update DR CLI" : ICON.plus + " Install DR CLI")}
+          </button>
+        </div>
+        <div id="cli-install-output" class="cli-output" style="display:${installing ? "block" : "none"}">${installing ? cliInstallOutput : ""}</div>
+      </div>
+      <div class="settings-card cli-tools-card">
+        <div class="cli-tools-card__head">
+          <div>
+            <div class="cli-tools-card__title">CLI Reference</div>
+            <div class="cli-tools-card__hint">Complete command documentation for the DR CLI</div>
+          </div>
+          <button class="st-btn st-btn--sm" id="cli-ref-open-btn">${ICON.externalLink} Open reference</button>
+        </div>
+      </div>
+      <div class="settings-card cli-tools-card">
+        <div class="cli-tools-card__head">
+          <div>
+            <div class="cli-tools-card__title">Install Guide</div>
+            <div class="cli-tools-card__hint">Manual installation and platform-specific instructions</div>
+          </div>
+          <button class="st-btn st-btn--sm" id="cli-install-guide-btn">${ICON.externalLink} Open guide</button>
+        </div>
+      </div>
+    </div>`;
+
+  wireCliTools(main);
+
+  if (drFound) {
+    fetch("/api/cli/version", { headers }).then(r => r.json()).then(data => {
+      const el = document.getElementById("cli-version-info");
+      if (el && data.installed) el.textContent = "Installed: " + data.version;
+      else if (el) { el.textContent = "Not installed"; el.style.color = "var(--st-state-failed-fg)"; }
+    }).catch(() => {});
+  }
+}
+
+function wireCliTools(main) {
+  main.querySelector(".crumb-home")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    viewMode = "all";
+    render();
+  });
+
+  main.querySelector("#cli-install-guide-btn")?.addEventListener("click", () => {
+    window.open("https://staticb73dae2b.blob.core.windows.net/static/cli/install.html", "_blank");
+  });
+
+  main.querySelector("#cli-ref-open-btn")?.addEventListener("click", () => {
+    window.open("https://staticb73dae2b.blob.core.windows.net/static/cli/reference.html", "_blank");
+  });
+
+  main.querySelector("#cli-install-btn")?.addEventListener("click", () => {
+    const installBtn = document.getElementById("cli-install-btn");
+    const outputEl = document.getElementById("cli-install-output");
+    if (!installBtn || !outputEl) return;
+
+    installBtn.disabled = true;
+    installBtn.textContent = "Installing…";
+    outputEl.style.display = "block";
+    outputEl.textContent = "";
+    cliInstallOutput = "";
+
+    if (cliInstallES) { try { cliInstallES.close(); } catch {} }
+    let cliInstallDone = false;
+    const es = new EventSource(`/api/cli/install?token=${encodeURIComponent(API_TOKEN)}`);
+    cliInstallES = es;
+    es.onmessage = (e) => {
+      const out = document.getElementById("cli-install-output");
+      const btn = document.getElementById("cli-install-btn");
+      const ver = document.getElementById("cli-version-info");
+      let msg;
+      try { msg = JSON.parse(e.data); } catch { return; }
+      if (msg.type === "stdout" || msg.type === "stderr") {
+        cliInstallOutput += msg.data;
+        if (out) { out.textContent = cliInstallOutput; out.scrollTop = out.scrollHeight; }
+      } else if (msg.type === "done") {
+        cliInstallDone = true;
+        cliInstallOutput += "\n✓ " + msg.data;
+        if (out) out.textContent = cliInstallOutput;
+        if (btn) { btn.innerHTML = ICON.refresh + " Update DR CLI"; btn.disabled = false; }
+        es.close();
+        if (cliInstallES === es) cliInstallES = null;
+        showToast("DR CLI installed/updated successfully.");
+        fetch("/api/cli/version", { headers }).then(r => r.json()).then(d => {
+          if (ver && d.installed) ver.textContent = "Installed: " + d.version;
+        }).catch(() => {});
+        recheckHealth();
+      } else if (msg.type === "error") {
+        cliInstallDone = true;
+        cliInstallOutput += "\n✗ " + msg.data;
+        if (out) out.textContent = cliInstallOutput;
+        if (btn) { btn.textContent = "Retry"; btn.disabled = false; }
+        es.close();
+        if (cliInstallES === es) cliInstallES = null;
+        showToast("DR CLI install failed.", "error");
+      }
+    };
+    es.onerror = () => {
+      if (cliInstallDone) return;
+      setTimeout(() => {
+        if (cliInstallDone) return;
+        cliInstallDone = true;
+        cliInstallOutput += "\nConnection to server lost. Check if the server is still running.";
+        const out = document.getElementById("cli-install-output");
+        const btn = document.getElementById("cli-install-btn");
+        if (out) out.textContent = cliInstallOutput;
+        if (btn) { btn.textContent = "Retry"; btn.disabled = false; }
+        try { es.close(); } catch {}
+        if (cliInstallES === es) cliInstallES = null;
+      }, 500);
+    };
+  });
+}
+
+function wireCliReference(main) {
+  main.querySelector(".crumb-home")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    viewMode = "all";
+    render();
+  });
+}
+
+function runCliInstall(statusEl, btn) {
+  btn.disabled = true;
+  btn.textContent = "Installing…";
+  statusEl.textContent = "Starting…";
+  statusEl.style.color = "var(--st-ink-muted)";
+  const es = new EventSource(`/api/cli/install?token=${encodeURIComponent(API_TOKEN)}`);
+  let output = "";
+  es.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === "stdout" || msg.type === "stderr") {
+      output += msg.data;
+      statusEl.textContent = msg.data.trim().split("\n").pop();
+    } else if (msg.type === "done") {
+      statusEl.textContent = "Installed";
+      statusEl.style.color = "var(--st-state-active-fg)";
+      btn.textContent = "Update DR CLI";
+      btn.disabled = false;
+      es.close();
+      showToast("DR CLI installed/updated successfully.");
+      recheckHealth().then(() => render());
+    } else if (msg.type === "error") {
+      statusEl.textContent = "Failed";
+      statusEl.style.color = "var(--st-state-failed-fg)";
+      btn.textContent = "Retry";
+      btn.disabled = false;
+      es.close();
+      showToast("DR CLI install failed: " + msg.data, "error");
+    }
+  };
+  es.onerror = () => {
+    statusEl.textContent = "Connection lost";
+    statusEl.style.color = "var(--st-state-failed-fg)";
+    btn.textContent = "Retry";
+    btn.disabled = false;
+    es.close();
+  };
+}
+
 function buildSettingsHealthRows() {
-  if (!healthChecks) return `<div class="settings-row"><div class="settings-row__main" style="font-size:12px;color:var(--dr-text-secondary)">Health data not available. Click "Run health check" to refresh.</div></div>`;
+  if (!healthChecks) return `<div class="settings-row"><div class="settings-row__main" style="font-size:12px;color:var(--st-ink-muted)">Health data not available. Click "Run health check" to refresh.</div></div>`;
+  const drFound = healthChecks.dr?.found;
   const rows = [
-    { label: "Datarails CLI (dr)", ok: healthChecks.dr?.found },
+    { label: "Datarails CLI (dr)", ok: drFound, action: `<button class="st-btn st-btn--sm" id="settings-cli-install">${drFound ? "Update" : "Install"}</button>` },
     { label: "Google Chrome", ok: healthChecks.chrome?.found },
     { label: "Windows Terminal", ok: healthChecks.windowsTerminal?.found },
     { label: "Claude CLI", ok: healthChecks.claude?.found },
@@ -1912,13 +2232,15 @@ function buildSettingsHealthRows() {
     <div class="health-row">
       <span class="health-dot ${r.ok ? "health-dot--pass" : "health-dot--fail"}"></span>
       <span class="health-row__label">${esc(r.label)}</span>
-      <span class="health-row__status">${r.ok ? "OK" : "Not found"}</span>
+      <span class="health-row__status" ${r.action ? 'id="cli-install-status"' : ""}>${r.ok ? "OK" : "Not found"}</span>
+      ${r.action || ""}
     </div>`).join("");
 }
 
 function showSettingsModal() {
   const vdOn = userSettings.useVirtualDesktops;
   const vdDisabled = vdAvailable === false;
+  const currentTheme = document.documentElement.getAttribute("data-theme") || "warm";
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   overlay.innerHTML = `
@@ -1932,6 +2254,27 @@ function showSettingsModal() {
       </div>
       <div class="modal__body">
         <div class="settings-group">
+          <div>
+            <div class="settings-group__title">Appearance</div>
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-row__main">
+                  <div class="settings-row__label">Theme</div>
+                  <div class="settings-row__hint">Choose your preferred palette</div>
+                </div>
+                <div class="palette-picker">
+                  ${["warm", "zinc", "dark", "cream"].map((t) => `
+                    <button class="palette-swatch${t === currentTheme ? " is-active" : ""}" data-palette="${t}" title="${t}">
+                      <span class="palette-swatch__stripe" style="background:${t === "warm" ? "#FAFAF9" : t === "zinc" ? "#F8FAFC" : t === "dark" ? "#16181D" : "#F4EEE0"}"></span>
+                      <span class="palette-swatch__stripe" style="background:${t === "warm" ? "#0A0A0B" : t === "zinc" ? "#0F172A" : t === "dark" ? "#ECEEF4" : "#1A1714"}"></span>
+                      <span class="palette-swatch__stripe" style="background:#4646CE"></span>
+                    </button>
+                  `).join("")}
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div>
             <div class="settings-group__title">Launch behavior</div>
             <div class="settings-card">
@@ -1953,7 +2296,7 @@ function showSettingsModal() {
             <div class="settings-card" id="settings-health-card">
               ${buildSettingsHealthRows()}
               <div style="padding:8px 16px 12px;text-align:right">
-                <button class="btn btn--sm" id="settings-health-recheck">${ICON.refresh} Run health check</button>
+                <button class="st-btn st-btn--sm" id="settings-health-recheck">${ICON.refresh} Run health check</button>
               </div>
             </div>
           </div>
@@ -1969,7 +2312,7 @@ function showSettingsModal() {
                       : "Not yet synced"
                   }${syncStatus.error ? ` — Error: ${esc(syncStatus.error)}` : ""}</div>
                 </div>
-                <button class="btn btn--sm" id="settings-sync-btn">${ICON.refresh} Sync now</button>
+                <button class="st-btn st-btn--sm" id="settings-sync-btn">${ICON.refresh} Sync now</button>
               </div>
             </div>
           </div>
@@ -1980,9 +2323,9 @@ function showSettingsModal() {
               <div class="settings-row">
                 <div class="settings-row__main">
                   <div class="settings-row__label">Cleanup unused data</div>
-                  <div class="settings-row__sub">Scan for orphaned Chrome profiles and workspaces from old launches</div>
+                  <div class="settings-row__hint">Scan for orphaned Chrome profiles and workspaces from old launches</div>
                 </div>
-                <button class="btn btn--sm" id="settings-cleanup-scan">Scan</button>
+                <button class="st-btn st-btn--sm" id="settings-cleanup-scan">Scan</button>
               </div>
               <div id="cleanup-results" style="display:none"></div>
             </div>
@@ -1992,11 +2335,11 @@ function showSettingsModal() {
             <div class="settings-group__title">About</div>
             <div class="settings-card">
               <div class="settings-row">
-                <div class="settings-row__main" style="font-size:12px;color:var(--dr-text-secondary);line-height:1.6">
+                <div class="settings-row__main" style="font-size:12px;color:var(--st-ink-muted);line-height:1.6">
                   <div>DR Launcher — local-first customer launcher</div>
-                  <div>API token: <code style="font-family:var(--dr-font-mono);color:var(--dr-text-body)">${esc(String(API_TOKEN).slice(0, 6))}…${esc(String(API_TOKEN).slice(-4))}</code></div>
+                  <div>API token: <code style="font-family:'JetBrains Mono',monospace;color:var(--st-ink)">${esc(String(API_TOKEN).slice(0, 6))}…${esc(String(API_TOKEN).slice(-4))}</code></div>
                 </div>
-                <button class="btn btn--sm" id="settings-copy-diag">Copy diagnostics</button>
+                <button class="st-btn st-btn--sm" id="settings-copy-diag">Copy diagnostics</button>
               </div>
             </div>
           </div>
@@ -2004,10 +2347,21 @@ function showSettingsModal() {
       </div>
       <div class="modal__foot">
         <span></span>
-        <button class="btn btn--primary" data-modal-close>Done</button>
+        <button class="st-btn st-btn--primary" data-modal-close>Done</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
+
+  // Palette switching
+  overlay.querySelectorAll("[data-palette]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      overlay.querySelectorAll(".palette-swatch").forEach((s) => s.classList.remove("is-active"));
+      btn.classList.add("is-active");
+      applyTheme(btn.dataset.palette);
+      saveSettingsQuiet({ theme: btn.dataset.palette });
+    });
+  });
+
   const tog = overlay.querySelector("#set-vd");
   if (tog && !vdDisabled) {
     tog.addEventListener("click", () => {
@@ -2052,17 +2406,24 @@ function showSettingsModal() {
     });
   }
   overlay.addEventListener("click", async (e) => {
-    const btn = e.target.closest("#settings-health-recheck");
-    if (!btn) return;
-    btn.disabled = true;
-    btn.textContent = "Checking…";
-    await recheckHealth();
-    const card = overlay.querySelector("#settings-health-card");
-    if (card) {
-      card.innerHTML = buildSettingsHealthRows()
-        + `<div style="padding:8px 16px 12px;text-align:right"><button class="btn btn--sm" id="settings-health-recheck">${ICON.refresh} Run health check</button></div>`;
+    const recheckBtn = e.target.closest("#settings-health-recheck");
+    if (recheckBtn) {
+      recheckBtn.disabled = true;
+      recheckBtn.textContent = "Checking…";
+      await recheckHealth();
+      const card = overlay.querySelector("#settings-health-card");
+      if (card) {
+        card.innerHTML = buildSettingsHealthRows()
+          + `<div style="padding:8px 16px 12px;text-align:right"><button class="st-btn st-btn--sm" id="settings-health-recheck">${ICON.refresh} Run health check</button></div>`;
+      }
+      showToast("Health check complete.");
+      return;
     }
-    showToast("Health check complete.");
+    const installBtn = e.target.closest("#settings-cli-install");
+    if (installBtn) {
+      const statusEl = overlay.querySelector("#cli-install-status");
+      if (statusEl) runCliInstall(statusEl, installBtn);
+    }
   });
   const cleanupBtn = overlay.querySelector("#settings-cleanup-scan");
   if (cleanupBtn) {
@@ -2078,7 +2439,7 @@ function showSettingsModal() {
         const totalWorkspaces = data.workspaces?.length || 0;
         if (totalProfiles === 0 && totalWorkspaces === 0) {
           resultsDiv.style.display = "block";
-          resultsDiv.innerHTML = `<div style="padding:12px 16px;color:var(--dr-text-secondary);font-size:13px">No orphaned data found.</div>`;
+          resultsDiv.innerHTML = `<div style="padding:12px 16px;color:var(--st-ink-muted);font-size:13px">No orphaned data found.</div>`;
           return;
         }
         let html = `<div style="padding:12px 16px;font-size:13px">`;
@@ -2087,24 +2448,24 @@ function showSettingsModal() {
           html += `<div style="margin-bottom:8px"><strong>${totalProfiles} orphaned Chrome profile${totalProfiles > 1 ? "s" : ""}</strong> (${totalSize} MB)</div>`;
           html += `<div style="margin-bottom:8px">`;
           data.profiles.forEach((p) => {
-            html += `<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;color:var(--dr-text-secondary)">
+            html += `<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;color:var(--st-ink-muted)">
               <input type="checkbox" class="cleanup-profile-cb" data-path="${esc(p.path)}" checked>
               ${esc(p.slug)} (${p.sizeMB} MB)${p.lastUsed ? ` — last used ${new Date(p.lastUsed).toLocaleDateString()}` : ""}
             </label>`;
           });
-          html += `</div><button class="btn btn--sm btn--danger" id="cleanup-purge-profiles">Delete selected profiles</button>`;
+          html += `</div><button class="st-btn st-btn--sm st-btn--destructive" id="cleanup-purge-profiles">Delete selected profiles</button>`;
         }
         if (totalWorkspaces > 0) {
           const totalSize = data.workspaces.reduce((sum, w) => sum + w.sizeMB, 0).toFixed(1);
           html += `<div style="margin-top:12px;margin-bottom:8px"><strong>${totalWorkspaces} orphaned workspace${totalWorkspaces > 1 ? "s" : ""}</strong> (${totalSize} MB)</div>`;
           html += `<div style="margin-bottom:8px">`;
           data.workspaces.forEach((w) => {
-            html += `<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;color:var(--dr-text-secondary)">
+            html += `<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;color:var(--st-ink-muted)">
               <input type="checkbox" class="cleanup-ws-cb" data-path="${esc(w.path)}" checked>
-              ${esc(w.slug)} (${w.sizeMB} MB)${w.hasUserContent ? ` <span class="badge badge--stale" title="Contains user-modified content">modified</span>` : ""}
+              ${esc(w.slug)} (${w.sizeMB} MB)${w.hasUserContent ? ` <span class="st-badge st-badge--stale">modified</span>` : ""}
             </label>`;
           });
-          html += `</div><button class="btn btn--sm btn--warn" id="cleanup-quarantine-ws">Move selected to quarantine</button>`;
+          html += `</div><button class="st-btn st-btn--sm st-btn--stale" id="cleanup-quarantine-ws">Move selected to quarantine</button>`;
         }
         html += `</div>`;
         resultsDiv.style.display = "block";
@@ -2173,7 +2534,6 @@ function initKeyboardShortcuts() {
     const isInput = e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA";
     const mod = e.metaKey || e.ctrlKey;
 
-    // Cmd/Ctrl+K → focus search
     if (mod && e.key === "k") {
       e.preventDefault();
       const input = document.querySelector(".topbar__search input");
@@ -2181,7 +2541,6 @@ function initKeyboardShortcuts() {
       return;
     }
 
-    // Escape → clear search, clear selection, or close modal
     if (e.key === "Escape") {
       if (isInput && searchQuery) {
         searchQuery = "";
@@ -2198,7 +2557,6 @@ function initKeyboardShortcuts() {
 
     if (isInput) return;
 
-    // Cmd/Ctrl+A → select all visible
     if (mod && e.key === "a") {
       e.preventDefault();
       const filtered = filterAccounts(accounts);
@@ -2206,7 +2564,6 @@ function initKeyboardShortcuts() {
       return;
     }
 
-    // Enter → launch selection queue
     if (e.key === "Enter" && selectedIds.size > 0 && !launchInProgress) {
       e.preventDefault();
       launchBatchQueue();
@@ -2215,34 +2572,20 @@ function initKeyboardShortcuts() {
   });
 }
 
-function updateThemeIcon(theme) {
-  const btn = document.getElementById("btn-theme");
-  if (btn) btn.innerHTML = theme === "dark" ? ICON.sun : ICON.moon;
-}
-
 function applyTheme(theme) {
+  const valid = ["warm", "zinc", "dark", "cream"];
+  if (!valid.includes(theme)) theme = "warm";
   document.documentElement.setAttribute("data-theme", theme);
-  updateThemeIcon(theme);
-}
-
-function toggleTheme() {
-  const current = document.documentElement.getAttribute("data-theme") || "light";
-  const next = current === "dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
-  updateThemeIcon(next);
-  saveSettingsQuiet({ theme: next });
 }
 
 // ── Init ──────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
-  // Wire login buttons
   document.getElementById("login-btn")?.addEventListener("click", triggerLogin);
   document.getElementById("dev-login-btn")?.addEventListener("click", triggerDevLogin);
   document.getElementById("dev-password")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") triggerDevLogin();
   });
 
-  // Check auth status — gate the app behind it
   await fetchAuthStatus();
 
   if (authState.authenticated) {
@@ -2254,42 +2597,23 @@ document.addEventListener("DOMContentLoaded", async () => {
       const syncRes = await fetch("/api/sync/init", { method: "POST", headers });
       const syncData = await syncRes.json();
       if (syncData.ok && syncData.preferences) {
-        applyTheme(syncData.preferences.theme || "light");
+        applyTheme(syncData.preferences.theme || "warm");
       }
       await fetchSyncStatus();
     } catch { /* sync is best-effort */ }
     await initApp();
   }
-  // If not authenticated, the login screen is already visible
 });
 
 async function initApp() {
-  document.getElementById("btn-refresh")?.addEventListener("click", () => fetchAccounts(true));
-  document.getElementById("btn-settings")?.addEventListener("click", showSettingsModal);
-  document.getElementById("btn-help")?.addEventListener("click", showHelpModal);
-  document.getElementById("btn-theme")?.addEventListener("click", toggleTheme);
-
-  document.getElementById("user-switcher")?.addEventListener("click", () => {
-    if (authState.authenticated) {
-      if (confirm("Sign out of DR Launcher?")) triggerLogout();
-    }
-  });
-
-  const searchInput = document.querySelector(".topbar__search input");
-  if (searchInput) {
-    searchInput.addEventListener("input", (e) => {
-      searchQuery = e.target.value.trim();
-      render();
-    });
-  }
-
+  renderTopbar();
   initKeyboardShortcuts();
 
   await Promise.all([fetchServers(), fetchSettings(), fetchHealth(), fetchRecents(), fetchSessions()]);
 
   favoriteIds = new Set(userSettings.favoriteIds || []);
   collapsedServers = new Set(userSettings.collapsedServers || []);
-  applyTheme(userSettings.theme || "light");
+  applyTheme(userSettings.theme || "warm");
 
   await fetchAccounts();
 

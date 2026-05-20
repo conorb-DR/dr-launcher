@@ -39,7 +39,29 @@
       "Bash(node -e ' *)",
       "Bash(node -e \"require\\('./lib/sync'\\); require\\('./lib/cloud'\\); console.log\\('Sync + cloud modules load OK'\\)\")",
       "PowerShell(gh --version)",
-      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); gh auth login --web --git-protocol https)"
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); gh auth login --web --git-protocol https)",
+      "mcp__ab1a976d-dbb7-4858-a27d-dcb5a41a2930__slack_search_users",
+      "mcp__ab1a976d-dbb7-4858-a27d-dcb5a41a2930__slack_send_message",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\ConorBarnett\\\\AI Project\\\\dr-launcher\" -Recurse -File | ForEach-Object { $_.FullName } | Sort-Object)",
+      "PowerShell(Test-Path \"$env:LOCALAPPDATA\\\\DR Launcher\\\\logs\\\\launcher.log\"; Get-Content \"$env:LOCALAPPDATA\\\\DR Launcher\\\\logs\\\\launcher.log\" -TotalCount 5)",
+      "PowerShell(Remove-Item \"C:\\\\Users\\\\ConorBarnett\\\\AI Project\\\\dr-launcher\\\\BUGS.md\" -Confirm:$false)",
+      "PowerShell(Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'server\\\\.js' } | Stop-Process -Force -Confirm:$false; Start-Sleep -Seconds 1)",
+      "mcp__Claude_in_Chrome__tabs_create_mcp",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Skill(anthropic-skills:docx)",
+      "Skill(anthropic-skills:docx:*)",
+      "Read(//c/Users/ConorBarnett/Downloads/**)",
+      "Bash(python \"C:\\\\Users\\\\ConorBarnett\\\\AppData\\\\Roaming\\\\Claude\\\\local-agent-mode-sessions\\\\skills-plugin\\\\5596cd10-d66c-427e-9499-d7fef18fc0a6\\\\65ab7ed4-aa81-4d1b-9b08-1c42b0ffc07e\\\\skills\\\\docx\\\\scripts\\\\office\\\\unpack.py\" \"2026-05-04-agent-command-channels-design.docx\" \"C:\\\\Users\\\\ConorBarnett\\\\Downloads\\\\agent-channels-unpacked\")",
+      "PowerShell(pandoc \"C:\\\\Users\\\\ConorBarnett\\\\Downloads\\\\2026-05-04-agent-command-channels-design.docx\" -t markdown --wrap=none 2>$null)",
+      "PowerShell(Start-Process -NoNewWindow -FilePath \"node\" -ArgumentList \"server.js --no-open\" -WorkingDirectory \"C:\\\\Users\\\\ConorBarnett\\\\AI Project\\\\dr-launcher\")",
+      "PowerShell(Invoke-RestMethod -Uri \"http://127.0.0.1:3456/ping\" -ErrorAction SilentlyContinue)",
+      "PowerShell($signalFile = \"$env:LOCALAPPDATA\\\\DR Launcher\\\\tray-signal-test.tmp\"; Set-Content -Path $signalFile -Value \"\" -Encoding utf8; $proc = Start-Process -FilePath \"powershell.exe\" -ArgumentList \"-NoProfile\",\"-STA\",\"-WindowStyle\",\"Hidden\",\"-ExecutionPolicy\",\"Bypass\",\"-File\",\"C:\\\\Users\\\\ConorBarnett\\\\AI Project\\\\dr-launcher\\\\lib\\\\scripts\\\\tray.ps1\",\"-Port\",\"3456\",\"-SignalFile\",$signalFile,\"-NodePid\",\"35068\" -PassThru; Start-Sleep -Seconds 3; $proc.HasExited)",
+      "PowerShell($signalFile = \"$env:LOCALAPPDATA\\\\DR Launcher\\\\tray-signal-test.tmp\"; Set-Content -Path $signalFile -Value \"\" -Encoding utf8; powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\ConorBarnett\\\\AI Project\\\\dr-launcher\\\\lib\\\\scripts\\\\tray.ps1\" -Port 3456 -SignalFile $signalFile -NodePid 35068 2>&1 | Select-Object -First 20)",
+      "PowerShell(Get-Process -Id $proc.Id | Select-Object Id, ProcessName; \"Tray process is running\")",
+      "PowerShell($cscPath = Join-Path $env:SystemRoot \"Microsoft.NET\\\\Framework64\\\\v4.0.30319\\\\csc.exe\"; if \\(Test-Path $cscPath\\) { \"Found csc.exe: $cscPath\"; & $cscPath /target:winexe /optimize /reference:System.Windows.Forms.dll \"/out:C:\\\\Users\\\\ConorBarnett\\\\AI Project\\\\dr-launcher\\\\packaging\\\\DR-Launcher.exe\" \"C:\\\\Users\\\\ConorBarnett\\\\AI Project\\\\dr-launcher\\\\packaging\\\\Launcher.cs\" } else { \"csc.exe not found\" })",
+      "WebFetch(domain:staticb73dae2b.blob.core.windows.net)"
     ]
   }
 }
