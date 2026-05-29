@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node server.js",
     "build": "powershell -ExecutionPolicy Bypass -File packaging/build.ps1",
-    "test": "node tests/agents.test.js",
+    "test": "node --test tests/**/*.test.js",
     "lint:paths": "node scripts/lint-agent-paths.js"
   },
   "dependencies": {
