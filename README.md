@@ -66,8 +66,12 @@ dr-launcher/
 │   ├── log.js             # Logging (file + console)
 │   └── tray.js            # System tray integration
 ├── public/
-│   ├── index.html         # Main UI shell
-│   ├── app.js             # Frontend application
+│   ├── index.html         # Main UI shell (loads js/main.mjs as a module)
+│   ├── js/                # Frontend ES modules
+│   │   ├── main.mjs       # App entry/orchestrator
+│   │   ├── util.mjs       # esc() and pure helpers
+│   │   ├── servers.mjs    # Server registry (SERVER_FALLBACK, serverInfo)
+│   │   └── icons.mjs      # Inline SVG icon set
 │   └── style.css          # Styles
 └── packaging/
     ├── build.ps1          # Windows installer build script
