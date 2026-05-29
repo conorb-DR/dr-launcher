@@ -37,6 +37,8 @@ let authState = { configured: false, authenticated: false, user: null };
 let launchErrors = [];
 let sortMode = "lastUsed";
 let lastRefreshedAt = null;
+let hiddenNonSupport = 0;
+let coverageHintDismissed = false; // session-only, mirrors prereqWarningDismissed
 let statusFilter = "all"; // "all" | "active" | "stale" | "reauth" | "idle"
 let agentCatalog = [];
 let _prevExpiredIds = null;
@@ -278,6 +280,13 @@ async function fetchAccounts(force) {
     }
     const data = await res.json();
     accounts = data.accounts || [];
+    hiddenNonSupport = data.hiddenNonSupport || 0;
+    // Centralized prune: drop selections/queue entries for accounts that are no
+    // longer visible (e.g. after toggling "Show all accounts" off) — runs on
+    // EVERY refresh path, not just the toggle handler.
+    const validIds = new Set(accounts.map((a) => a.id));
+    for (const id of [...selectedIds]) { if (!validIds.has(id)) selectedIds.delete(id); }
+    batchOrder = batchOrder.filter((id) => validIds.has(id));
   } catch (err) {
     if (accounts.length === 0) showToast("Failed to load accounts: " + err.message, "error");
   }
@@ -688,7 +697,9 @@ async function launchCustomer(account, opts = {}) {
 
     const data = await res.json();
     if (!res.ok) {
-      showToast("Launch failed: " + (data.error || "Unknown error"), "error");
+      const policy = data.error === "support_only" || data.error === "account_type_unknown";
+      const msg = data.message || data.error || "Unknown error";
+      if (!quiet) showToast(policy ? msg : "Launch failed: " + msg, policy ? "warn" : "error", policy ? { persistent: true } : {});
       return { ok: false, account, error: data.error || "Unknown error" };
     }
 
@@ -1334,9 +1345,14 @@ function renderRow(a) {
   const agentBadge = session?.agentId
     ? ` <span class="st-badge st-badge--agent"><span class="st-badge__dot"></span>${ICON.zap} ${esc(session.agentName || session.agentId)}</span>`
     : "";
+  // Customer-user account (only ever visible when "Show all accounts" is on, or
+  // when it has a running session) — flag it unmistakably.
+  const userBadge = a.isSupport === false
+    ? ` <span class="st-badge" style="background:#fde68a;color:#92400e" title="Customer user account — not a Datarails support account">USER</span>`
+    : "";
   const badgeHtml = state !== "idle"
-    ? `<span class="st-status-row"><span class="st-badge st-badge--${state}"><span class="st-badge__dot"></span>${esc(ST_STATE_LABELS[state] || state)}</span>${agentBadge}</span>`
-    : `<span class="tbl__idle-dash">—</span>`;
+    ? `<span class="st-status-row"><span class="st-badge st-badge--${state}"><span class="st-badge__dot"></span>${esc(ST_STATE_LABELS[state] || state)}</span>${agentBadge}${userBadge}</span>`
+    : (userBadge ? `<span class="st-status-row">${userBadge}</span>` : `<span class="tbl__idle-dash">—</span>`);
 
   let actionsHtml = "";
   if (state === "active") {
@@ -1445,6 +1461,25 @@ function renderSkeleton() {
 }
 
 // ── Main render ──────────────────────────────────────────────────
+// Support-only default: surface how many customer-user accounts are hidden so an
+// org reachable only via a user account isn't silently lost. Renders in BOTH the
+// populated and empty-list branches.
+function coverageHintHtml() {
+  if (!(hiddenNonSupport > 0) || userSettings.showAllAccounts || coverageHintDismissed) return "";
+  const n = hiddenNonSupport;
+  // Same component/markup as the prereq (Virtual Desktops) banner so the two
+  // stack identically and the hint flows up into the prereq banner's slot when
+  // that one is dismissed.
+  return `
+    <div class="prereq-banner">
+      <span class="prereq-banner__icon">${ICON.alertTriangle}</span>
+      <span class="prereq-banner__text">${n} customer-user account${n === 1 ? "" : "s"} hidden (showing Datarails support accounts only). Enable <strong>Show all accounts</strong> in Settings to reveal ${n === 1 ? "it" : "them"}.</span>
+      <span class="prereq-banner__actions">
+        <button class="st-btn st-btn--ghost st-btn--sm" id="coverage-banner-dismiss">${ICON.x} Dismiss</button>
+      </span>
+    </div>`;
+}
+
 function render() {
   renderSidebar();
   renderLaunchStrip();
@@ -1479,7 +1514,7 @@ function render() {
     ? renderPrereqWarnings(prereqs) : "";
 
   if (accounts.length === 0) {
-    main.innerHTML = warningHtml + renderEmpty();
+    main.innerHTML = warningHtml + coverageHintHtml() + renderEmpty();
     wirePrereqBanner(main);
     main.querySelectorAll("[data-empty-server]").forEach((btn) => {
       btn.addEventListener("click", () => startLogin(btn.dataset.emptyServer));
@@ -1506,6 +1541,7 @@ function render() {
 
   main.innerHTML = `
     ${warningHtml}
+    ${coverageHintHtml()}
 
     ${launchErrors.map((err) => `
       <div class="launch-error-card">
@@ -1783,6 +1819,12 @@ function wirePrereqBanner(container) {
   });
   container.querySelector("#prereq-banner-dismiss")?.addEventListener("click", () => {
     prereqWarningDismissed = true;
+    render();
+  });
+  // Coverage hint (same banner component) — Dismiss hides it for the session,
+  // like the prereq banner. Revealing user accounts is a Settings-only action.
+  container.querySelector("#coverage-banner-dismiss")?.addEventListener("click", () => {
+    coverageHintDismissed = true;
     render();
   });
 }
@@ -2337,6 +2379,7 @@ function buildSettingsHealthRows() {
 
 function showSettingsModal() {
   const vdOn = userSettings.useVirtualDesktops;
+  const showAllOn = userSettings.showAllAccounts === true;
   const vdDisabled = vdAvailable === false;
   const currentTheme = document.documentElement.getAttribute("data-theme") || "warm";
   const overlay = document.createElement("div");
@@ -2346,7 +2389,7 @@ function showSettingsModal() {
       <div class="modal__head">
         <div>
           <h2>Settings</h2>
-          <p>Preferences sync across your devices.</p>
+          <p>Preferences sync across your devices. Advanced launch settings stay on this machine.</p>
         </div>
         <button class="modal__close" aria-label="Close">${ICON.x}</button>
       </div>
@@ -2385,6 +2428,13 @@ function showSettingsModal() {
                   }</div>
                 </div>
                 <button class="toggle ${vdOn ? "is-on" : ""} ${vdDisabled ? "is-disabled" : ""}" id="set-vd" ${vdDisabled ? "disabled" : ""}></button>
+              </div>
+              <div class="settings-row">
+                <div class="settings-row__main">
+                  <div class="settings-row__label">Show all accounts <span class="beta-badge">Advanced</span></div>
+                  <div class="settings-row__hint">Reveal customer-user accounts, not just Datarails support accounts. Launching as a customer user runs with that user's permissions and audit identity — use only to reproduce a user-specific issue. Stays on this machine.</div>
+                </div>
+                <button class="toggle ${showAllOn ? "is-on" : ""}" id="set-show-all-accounts"></button>
               </div>
             </div>
           </div>
@@ -2467,6 +2517,17 @@ function showSettingsModal() {
       tog.classList.toggle("is-on", on);
       saveSettings({ useVirtualDesktops: on });
       showToast(on ? "Virtual desktops enabled." : "Virtual desktops disabled.");
+    });
+  }
+  const showAllTog = overlay.querySelector("#set-show-all-accounts");
+  if (showAllTog) {
+    showAllTog.addEventListener("click", async () => {
+      const on = !showAllTog.classList.contains("is-on");
+      showAllTog.classList.toggle("is-on", on);
+      await saveSettings({ showAllAccounts: on });
+      await fetchAccounts(true); // re-filter; fetchAccounts also prunes stale selections
+      render();
+      showToast(on ? "Showing all accounts (incl. customer users)." : "Showing support accounts only.");
     });
   }
   const syncBtn = overlay.querySelector("#settings-sync-btn");

@@ -9,6 +9,7 @@ const chrome = require("./lib/chrome");
 const workspace = require("./lib/workspace");
 const slug = require("./lib/slug");
 const cookie = require("./lib/cookie");
+const accountVisibility = require("./lib/account-visibility");
 const virtualDesktop = require("./lib/virtual-desktop");
 const settings = require("./lib/settings");
 const sessions = require("./lib/sessions");
@@ -474,8 +475,14 @@ app.get("/api/accounts", requireToken, async (req, res) => {
   try {
     if (req.query.force === "1") drCli.invalidateAccountsCache();
     const discovered = await drCli.discoverAccounts();
-    const accounts = authHealth.mergeWithDiscovered(discovered);
-    res.json({ accounts });
+    authHealth.recordDiscoveredMeta(discovered); // persist isSupport immediately
+    const merged = authHealth.mergeWithDiscovered(discovered);
+    const showAllAccounts = settings.getSettings().showAllAccounts === true;
+    const keepAccountIds = new Set(sessions.getVisibleSessions().map((s) => s.accountId));
+    const { accounts, hiddenNonSupport } = accountVisibility.filterByVisibility(
+      merged, { showAll: showAllAccounts, keepAccountIds }
+    );
+    res.json({ accounts, showAllAccounts, hiddenNonSupport });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -486,8 +493,14 @@ app.post("/api/refresh", requireToken, requireAuthenticated, async (req, res) =>
   try {
     const { server } = req.body;
     const key = drCli.validateServer(server);
-    const accounts = await drCli.discoverAccounts([key]);
-    res.json({ accounts });
+    const discovered = await drCli.discoverAccounts([key]);
+    authHealth.recordDiscoveredMeta(discovered);
+    const showAllAccounts = settings.getSettings().showAllAccounts === true;
+    const keepAccountIds = new Set(sessions.getVisibleSessions().map((s) => s.accountId));
+    const { accounts, hiddenNonSupport } = accountVisibility.filterByVisibility(
+      discovered, { showAll: showAllAccounts, keepAccountIds }
+    );
+    res.json({ accounts, showAllAccounts, hiddenNonSupport });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -649,6 +662,19 @@ app.post("/api/launch", requireToken, requireAuthenticated, async (req, res) => 
     logger.log("warn", "launch", `Launch email domain "${identity.emailDomain}" differs from orgDomain "${identity.orgDomain}" (${accountId})`);
   }
 
+  // Policy (fail-closed): only Datarails SUPPORT accounts launch unless the advanced
+  // "Show all accounts" toggle is on. Unknown ⇒ a trusted lookup resolves+persists it;
+  // if it still can't be confirmed, refuse — never silently launch a customer user.
+  if (settings.getSettings().showAllAccounts !== true) {
+    const isSupport = await authHealth.resolveIsSupport(accountId, { serverKey: identity.serverKey, email: identity.email });
+    if (isSupport !== true) {
+      if (isSupport === false) {
+        return res.status(403).json({ error: "support_only", message: "Launching a customer user account is disabled — enable 'Show all accounts' in Settings." });
+      }
+      return res.status(428).json({ error: "account_type_unknown", message: "Couldn't verify this is a support account — refresh accounts and retry, or enable 'Show all accounts'." });
+    }
+  }
+
   // Validate agent request before acquiring lock (fail-fast)
   let validatedAgent = null;
   if (agentId) {
@@ -696,7 +722,7 @@ app.post("/api/launch", requireToken, requireAuthenticated, async (req, res) => 
 
   const userSettings = settings.getSettings();
   const useVD = userSettings.useVirtualDesktops;
-  const desktopName = `[${account.serverKey}] ${account.orgDomain}`;
+  const desktopName = `[${account.serverKey}] ${account.orgDomain} - ${slug.accountTag(account.serverKey, account.orgId, account.orgDomain, account.email)}`;
   const terminalTitle = `DR Launcher - ${workspace.customerSlug(account.serverKey, account.orgId, account.orgDomain, account.email)} - ${launchId}`;
 
   const result = {

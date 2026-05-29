@@ -157,3 +157,64 @@ describe("probeAccountNow", () => {
     assert.equal(readRegistry().find((r) => r.id === "US2:dead@x.com").cliAuthStatus, "expired");
   });
 });
+
+// --- isSupport persistence + launch-policy resolution ---
+
+describe("isSupportAccount", () => {
+  beforeEach(rmRegistry);
+  it("returns the stored boolean, or null when unknown/absent", () => {
+    writeRegistry([
+      { id: "US2:s@x.com", isSupport: true },
+      { id: "US2:u@x.com", isSupport: false },
+      { id: "US2:q@x.com" }, // no isSupport field
+    ]);
+    assert.equal(authHealth.isSupportAccount("US2:s@x.com"), true);
+    assert.equal(authHealth.isSupportAccount("US2:u@x.com"), false);
+    assert.equal(authHealth.isSupportAccount("US2:q@x.com"), null);
+    assert.equal(authHealth.isSupportAccount("US2:missing@x.com"), null);
+  });
+});
+
+describe("resolveIsSupport (fail-closed)", () => {
+  beforeEach(rmRegistry);
+
+  it("returns the known value from the registry WITHOUT a lookup", async () => {
+    writeRegistry([{ id: "US2:s@x.com", isSupport: true }]);
+    const orig = drCli.getAccountDetails;
+    let called = false;
+    drCli.getAccountDetails = async () => { called = true; return null; };
+    try {
+      assert.equal(await authHealth.resolveIsSupport("US2:s@x.com", { serverKey: "US2", email: "s@x.com" }), true);
+    } finally { drCli.getAccountDetails = orig; }
+    assert.equal(called, false, "must not look up when the registry already knows");
+  });
+
+  it("looks up + persists when unknown", async () => {
+    writeRegistry([{ id: "US2:q@x.com" }]);
+    const orig = drCli.getAccountDetails;
+    drCli.getAccountDetails = async () => ({ isSupport: false });
+    try {
+      assert.equal(await authHealth.resolveIsSupport("US2:q@x.com", { serverKey: "US2", email: "q@x.com" }), false);
+    } finally { drCli.getAccountDetails = orig; }
+    assert.equal(readRegistry().find((r) => r.id === "US2:q@x.com").isSupport, false, "must persist the resolved value");
+  });
+
+  it("returns null (caller refuses) when the lookup can't confirm", async () => {
+    writeRegistry([{ id: "US2:q@x.com" }]);
+    const orig = drCli.getAccountDetails;
+    drCli.getAccountDetails = async () => null;
+    try {
+      assert.equal(await authHealth.resolveIsSupport("US2:q@x.com", { serverKey: "US2", email: "q@x.com" }), null);
+    } finally { drCli.getAccountDetails = orig; }
+  });
+});
+
+describe("recordDiscoveredMeta", () => {
+  beforeEach(rmRegistry);
+  it("persists isSupport from a discovery result immediately", () => {
+    authHealth.recordDiscoveredMeta([
+      { id: "US2:s@x.com", email: "s@x.com", serverKey: "US2", orgDomain: "x.com", isSupport: true },
+    ]);
+    assert.equal(authHealth.isSupportAccount("US2:s@x.com"), true);
+  });
+});
