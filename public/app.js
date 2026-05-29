@@ -203,6 +203,15 @@ async function triggerLogout() {
 }
 
 function updateUserUI() {
+  // Reveal the correct login block FIRST — this must run even on the login
+  // screen, where the app topbar (and #user-pill) hasn't been rendered yet.
+  // (Previously the early-return below skipped it, leaving a logged-out user
+  // stranded on the brand-only card with no way to sign in.)
+  const msPanel = document.getElementById("login-microsoft");
+  const devPanel = document.getElementById("login-dev");
+  if (msPanel) msPanel.style.display = authState.configured ? "" : "none";
+  if (devPanel) devPanel.style.display = authState.configured ? "none" : "";
+
   const pill = document.getElementById("user-pill");
   if (!pill) return;
   if (authState.authenticated && authState.user) {
@@ -224,11 +233,6 @@ function updateUserUI() {
       <span class="user-pill__info"><span class="user-pill__name">Sign in</span></span>
     `;
   }
-
-  const msPanel = document.getElementById("login-microsoft");
-  const devPanel = document.getElementById("login-dev");
-  if (msPanel) msPanel.style.display = authState.configured ? "" : "none";
-  if (devPanel) devPanel.style.display = authState.configured ? "none" : "";
 }
 
 async function triggerDevLogin() {
@@ -693,6 +697,14 @@ async function launchCustomer(account, opts = {}) {
       showToast(`Session tracking failed: ${data.sessionError}`, "warn");
     }
 
+    if (data.authExpired && !quiet) {
+      showToast(
+        `⚠️ ${account.orgDomain}: CLI session expired — re-authenticate before dr commands will work: dr login --server ${account.serverKey} --account ${account.email}`,
+        "warn",
+        { persistent: true }
+      );
+    }
+
     if (!quiet) {
       const parts = [];
       if (data.chrome?.ok) parts.push("Chrome");
@@ -763,6 +775,7 @@ async function launchCustomer(account, opts = {}) {
       localStorage.setItem(firstLaunchKey, new Date().toISOString());
     }
 
+    if (data.authExpired) await fetchAccounts();
     await fetchSessions();
     return { ok: true, account, desktopName };
   } catch (err) {

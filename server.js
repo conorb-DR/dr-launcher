@@ -678,6 +678,17 @@ app.post("/api/launch", requireToken, requireAuthenticated, async (req, res) => 
     orgDomain: identity.orgDomain,
     orgId: identity.orgId,
   };
+
+  // Probe the CLI session's REAL liveness concurrently with the launch work, so
+  // a dead dr session (refresh token expired) is surfaced as result.authExpired
+  // without adding latency to the launch.
+  const livenessPromise = authHealth
+    .probeAccountNow(accountId, {
+      serverKey: account.serverKey, email: account.email,
+      serverHost: account.serverHost, orgDomain: account.orgDomain, orgId: account.orgId,
+    })
+    .catch(() => null);
+
   const userSettings = settings.getSettings();
   const useVD = userSettings.useVirtualDesktops;
   const desktopName = `[${account.serverKey}] ${account.orgDomain}`;
@@ -866,6 +877,7 @@ app.post("/api/launch", requireToken, requireAuthenticated, async (req, res) => 
       });
     }
 
+    try { result.authExpired = (await livenessPromise) === "expired"; } catch { result.authExpired = false; }
     res.json(result);
   } finally {
     virtualDesktop.releaseLaunchLock();
