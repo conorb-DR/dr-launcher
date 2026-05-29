@@ -14,8 +14,8 @@
  * and renders a visual grid to stderr (so stdout stays clean for --json).
  */
 
-import fs from 'fs';
-import path from 'path';
+const fs = require('fs');
+const path = require('path');
 
 const GRID_COLS = 12;
 
@@ -358,7 +358,7 @@ function renderGrid(widgets, dashboardName) {
 
 // ─── CLI command builder ────────────────────────────────────────────────────
 
-export function buildCliCommand(w, dashboardId, server) {
+function buildCliCommand(w, dashboardId, server) {
   if (!w.layout) throw new Error(`Widget ${w.id_local} has no layout`);
 
   const base = `dr widgets ${w.type}`;
@@ -499,4 +499,6 @@ function main() {
   }
 }
 
-main();
+module.exports = { buildCliCommand };
+
+if (require.main === module) main();

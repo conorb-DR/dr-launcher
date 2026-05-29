@@ -8,7 +8,7 @@
  * Reads JWT from the OS keychain (where dr-cli stores it) and downloads the file
  * to .agent/downloads/<doc_id>-<version_id>.<ext>.
  *
- * Server-to-base-url mapping mirrors dr-cli.
+ * Server-to-base-url mapping must match lib/servers.js BUNDLED_DEFAULTS.
  */
 
 const fs = require("fs");
@@ -17,11 +17,14 @@ const https = require("https");
 const { execSync } = require("child_process");
 
 const SERVER_URLS = {
-  US: "https://us.datarails.com",
+  US: "https://app.datarails.com",
   US2: "https://us-2.datarails.com",
-  UK: "https://uk.datarails.com",
-  CA: "https://ca.datarails.com",
-  EU: "https://app.datarails.com",
+  UK: "https://ukapp.datarails.com",
+  CA: "https://caapp.datarails.com",
+  DEV: "https://dev.datarails.com",
+  "DEV-1": "https://dev-1.datarails.com",
+  TEST: "https://testapp.datarails.com",
+  DEMO: "https://demoapp.datarails.com",
 };
 
 function readJwt() {
@@ -85,7 +88,11 @@ async function main() {
   console.log(`✅ Saved to ${outPath}`);
 }
 
-main().catch((e) => {
-  console.error(`❌ ${e.message}`);
-  process.exit(1);
-});
+module.exports = { SERVER_URLS };
+
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(`❌ ${e.message}`);
+    process.exit(1);
+  });
+}

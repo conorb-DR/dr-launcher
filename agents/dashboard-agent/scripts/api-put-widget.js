@@ -8,32 +8,31 @@
  * Usage:
  *   node api-put-widget.js <widget-id> <dashboard-id> <widget-json-file> <server>
  *
- * Server base URLs:
- *   US   → https://app.datarails.com
- *   US2  → https://us-2.datarails.com
- *   UK   → https://uk.datarails.com
- *   CA   → https://ca.datarails.com
- *   DEV  → https://dev.datarails.com
+ * Server base URLs (canonical — must match lib/servers.js BUNDLED_DEFAULTS):
+ *   US    → https://app.datarails.com
+ *   US2   → https://us-2.datarails.com
+ *   UK    → https://ukapp.datarails.com
+ *   CA    → https://caapp.datarails.com
+ *   DEV   → https://dev.datarails.com
  *   DEV-1 → https://dev-1.datarails.com
+ *   TEST  → https://testapp.datarails.com
+ *   DEMO  → https://demoapp.datarails.com
  */
 
-import fs from 'fs';
-import path from 'path';
-import https from 'https';
-import os from 'os';
-import { createRequire } from 'module';
-
-const require = createRequire(import.meta.url);
+const fs = require('fs');
+const path = require('path');
+const https = require('https');
+const os = require('os');
 
 const SERVER_URLS = {
   US: 'https://app.datarails.com',
   US2: 'https://us-2.datarails.com',
-  UK: 'https://uk.datarails.com',
-  CA: 'https://ca.datarails.com',
+  UK: 'https://ukapp.datarails.com',
+  CA: 'https://caapp.datarails.com',
   DEV: 'https://dev.datarails.com',
   'DEV-1': 'https://dev-1.datarails.com',
-  TEST: 'https://test.datarails.com',
-  DEMO: 'https://demo.datarails.com',
+  TEST: 'https://testapp.datarails.com',
+  DEMO: 'https://demoapp.datarails.com',
 };
 
 const DR_CLI_KEYCHAIN_SERVICE = 'dr-cli';
@@ -161,4 +160,6 @@ async function main() {
   }
 }
 
-main();
+module.exports = { SERVER_URLS };
+
+if (require.main === module) main();
