@@ -38,13 +38,26 @@ export async function setupHarness(page, opts = {}) {
   // modal and replace EventSource with a deterministic no-op (launch/cli SSE).
   await page.addInitScript(() => {
     try { window.localStorage.setItem("dr-first-launch-v1:anon", "1970-01-01T00:00:00.000Z"); } catch (_e) { /* ignore */ }
+    // Deterministic EventSource: never emits on its own (launch/cli SSE never
+    // hangs the page). Open instances are tracked so a spec can script events
+    // via window.__emitES(urlSubstring, dataObject).
+    window.__esInstances = [];
     class FakeEventSource {
-      constructor(url) { this.url = url; this.readyState = 1; this.onmessage = null; this.onerror = null; this.onopen = null; this._listeners = {}; }
+      constructor(url) { this.url = url; this.readyState = 1; this.onmessage = null; this.onerror = null; this.onopen = null; this._listeners = {}; window.__esInstances.push(this); }
       addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
       removeEventListener(type, fn) { this._listeners[type] = (this._listeners[type] || []).filter((f) => f !== fn); }
       close() { this.readyState = 2; }
     }
     window.EventSource = FakeEventSource;
+    window.__emitES = (urlSub, data) => {
+      const payload = { data: JSON.stringify(data) };
+      for (const es of window.__esInstances) {
+        if (es.readyState !== 2 && String(es.url).includes(urlSub)) {
+          if (typeof es.onmessage === "function") es.onmessage(payload);
+          for (const fn of es._listeners.message || []) fn(payload);
+        }
+      }
+    };
   });
 
   const json = (route, obj, status = 200) =>
@@ -68,6 +81,7 @@ export async function setupHarness(page, opts = {}) {
         case "/api/sessions/health": return json(route, { ok: true, sessions: state.sessions });
         case "/api/agents":      return json(route, { agents: [] });
         case "/api/diagnostics": return json(route, { text: "DR Launcher diagnostics — e2e stub" });
+        case "/api/cli/version": return json(route, { installed: true, version: "1.2.3", installing: false });
         case "/api/accounts":    return json(route, computeAccounts(state));
         default: return json(route, {});
       }
