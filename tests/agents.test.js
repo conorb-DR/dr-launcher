@@ -358,6 +358,61 @@ describe("agents module", () => {
       assert.deepEqual(leaks, []);
     });
 
+    function workspaceWithSettings(settingsObj) {
+      const dir = makeTmpDir();
+      tmpDirs.push(dir);
+      fs.mkdirSync(path.join(dir, ".claude"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, ".claude", "settings.json"),
+        JSON.stringify(settingsObj, null, 2),
+        "utf8"
+      );
+      return dir;
+    }
+
+    it("does NOT flag a user-owned hook with an absolute path (P2-3)", () => {
+      // A teammate's own hook legitimately carries an absolute path. It has no
+      // _owner tag, so the leak scan must leave it alone.
+      const dir = workspaceWithSettings({
+        hooks: {
+          PostToolUse: [
+            { matcher: "Write", hooks: [{ type: "command", command: "node C:\\Users\\someone\\my-hook.js" }] },
+          ],
+        },
+      });
+      const leaks = agents.checkScaffoldLeaks(dir);
+      assert.deepEqual(leaks, [], "user-owned hook with abs path must not be flagged");
+    });
+
+    it("still flags a dr-agent-owned hook leak (P2-3)", () => {
+      const dir = workspaceWithSettings({
+        hooks: {
+          PostToolUse: [
+            { matcher: "Write", _owner: "dr-agent", hooks: [{ type: "command", command: "node C:\\Users\\someone\\leaked.js" }] },
+          ],
+        },
+      });
+      const leaks = agents.checkScaffoldLeaks(dir);
+      assert.ok(
+        leaks.some((l) => l.pattern === "windows-user-path"),
+        "dr-agent-owned hook leak should still be flagged"
+      );
+    });
+
+    it("flags an unexpanded token in a dr-agent hook but not in a sibling user hook (P2-3)", () => {
+      const dir = workspaceWithSettings({
+        hooks: {
+          PostToolUse: [
+            { matcher: "Write", hooks: [{ type: "command", command: "node /Users/someone/user.js" }] },
+            { matcher: "Edit", _owner: "dr-agent", hooks: [{ type: "command", command: "node [[SCRIPTS_DIR]]x.js" }] },
+          ],
+        },
+      });
+      const leaks = agents.checkScaffoldLeaks(dir);
+      assert.ok(leaks.some((l) => l.pattern === "unexpanded-token"), "agent token leak flagged");
+      assert.ok(!leaks.some((l) => l.pattern === "unix-user-path"), "user hook path not flagged");
+    });
+
     it("scans agent-owned hook scripts under .claude/", () => {
       // Plant a leaked token in a known declared hook script basename.
       const dir = makeTmpDir();
