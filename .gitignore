@@ -3,6 +3,7 @@ profiles.json
 .cache/
 *.log
 auth-config.json
+packaging/auth-config.prod.json
 .env
 .env.*
 *.tmp

@@ -83,8 +83,14 @@ Write-Host "Staging application files..."
 
 $appDist = Join-Path $DistDir "app"
 
-# Copy individual files
-$filesToCopy = @("server.js", "package.json", "package-lock.json", "auth-config.json")
+# Copy individual files.
+# NOTE: auth-config.json is intentionally NOT copied here. The dev auth-config.json
+# in the repo root is a placeholder; copying it would ship a non-functional config.
+# Instead, prod SSO config is shipped from the packaging-owned, gitignored
+# packaging/auth-config.prod.json (see below). When that file is absent, the dist
+# ships no auth-config.json at all, so the app falls back to dev-login (correct for
+# a build without prod credentials).
+$filesToCopy = @("server.js", "package.json", "package-lock.json")
 foreach ($f in $filesToCopy) {
     $src = Join-Path $RepoRoot $f
     if (Test-Path $src) {
@@ -92,8 +98,19 @@ foreach ($f in $filesToCopy) {
     }
 }
 
-# Copy directories (excluding unwanted)
-$dirsToCopy = @("lib", "public")
+# Ship prod SSO config only if the packaging-owned file exists. This file is
+# gitignored (it holds tenant/client IDs) and lives at packaging/auth-config.prod.json.
+$prodAuthConfig = Join-Path $PackagingDir "auth-config.prod.json"
+if (Test-Path $prodAuthConfig) {
+    Copy-Item $prodAuthConfig -Destination (Join-Path $appDist "auth-config.json")
+    Write-Host "Bundled prod SSO config from packaging/auth-config.prod.json" -ForegroundColor Green
+} else {
+    Write-Host "No packaging/auth-config.prod.json found - dist ships without auth-config.json (dev-login default)" -ForegroundColor Yellow
+}
+
+# Copy directories (excluding unwanted). 'agents' carries the bundled
+# dashboard/datamapper agent scaffolds — omitting it breaks agent launches.
+$dirsToCopy = @("lib", "public", "agents")
 foreach ($d in $dirsToCopy) {
     $src = Join-Path $RepoRoot $d
     if (Test-Path $src) {
