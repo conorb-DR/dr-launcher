@@ -10,6 +10,7 @@
 //     goHome(): void,             // return to the default view
 //   }
 import { ICON } from "./icons.mjs";
+import { esc } from "./util.mjs";
 
 // View-local install state (was top-level in main.mjs; only this view uses it).
 let cliInstallES = null;
@@ -38,7 +39,7 @@ export function renderCliTools(main, ctx) {
             ${installing ? "Installing…" : (drFound ? ICON.refresh + " Update DR CLI" : ICON.plus + " Install DR CLI")}
           </button>
         </div>
-        <div id="cli-install-output" class="cli-output" style="display:${installing ? "block" : "none"}">${installing ? cliInstallOutput : ""}</div>
+        <div id="cli-install-output" class="cli-output" style="display:${installing ? "block" : "none"}">${installing ? esc(cliInstallOutput) : ""}</div>
       </div>
       <div class="settings-card cli-tools-card">
         <div class="cli-tools-card__head">
