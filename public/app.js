@@ -1919,18 +1919,22 @@ function showMoreActionsMenu(anchor, acct, evt) {
     "---",
     { label: "Open in browser", action() { window.open(acct.serverHost || serverInfo(acct.serverKey).host, "_blank"); } },
   ];
-  const wsSlug = workspace_slug(acct.serverKey, acct.orgId, acct.orgDomain);
   if (healthChecks?.workspaceRoot?.path) {
     items.push({ label: "Open workspace folder", action() {
-      fetch("/api/open-folder", { method: "POST", headers, body: JSON.stringify({ folderPath: healthChecks.workspaceRoot.path + "\\\\" + wsSlug }) });
+      // The server resolves the workspace path from identity (canonical slug);
+      // the client no longer recomputes the slug, so it can't drift.
+      fetch("/api/open-folder", {
+        method: "POST", headers,
+        body: JSON.stringify({ serverKey: acct.serverKey, email: acct.email, orgId: acct.orgId, orgDomain: acct.orgDomain }),
+      }).then(async (r) => {
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          showToast(d.error || "Couldn't open workspace folder.", "warn");
+        }
+      });
     }});
   }
   showDropdown(anchor, items, evt);
-}
-
-function workspace_slug(serverKey, orgId, orgDomain) {
-  const domain = (orgDomain || "").replace(/[^a-z0-9.-]/gi, "-").toLowerCase();
-  return `${(serverKey || "").toLowerCase()}-${orgId || "0"}-${domain}`;
 }
 
 // ── Modals ───────────────────────────────────────────────────────

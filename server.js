@@ -7,6 +7,7 @@ const { exec, execFile, spawn } = require("child_process");
 const drCli = require("./lib/dr-cli");
 const chrome = require("./lib/chrome");
 const workspace = require("./lib/workspace");
+const slug = require("./lib/slug");
 const virtualDesktop = require("./lib/virtual-desktop");
 const settings = require("./lib/settings");
 const sessions = require("./lib/sessions");
@@ -692,7 +693,7 @@ app.post("/api/launch", requireToken, requireAuthenticated, async (req, res) => 
   const userSettings = settings.getSettings();
   const useVD = userSettings.useVirtualDesktops;
   const desktopName = `[${account.serverKey}] ${account.orgDomain}`;
-  const terminalTitle = `DR Launcher - ${workspace.customerSlug(account.serverKey, account.orgId, account.orgDomain)} - ${launchId}`;
+  const terminalTitle = `DR Launcher - ${workspace.customerSlug(account.serverKey, account.orgId, account.orgDomain, account.email)} - ${launchId}`;
 
   const result = {
     launchId,
@@ -919,18 +920,27 @@ app.post("/api/login", requireToken, requireAuthenticated, (req, res) => {
   }
 });
 
-// Open a workspace folder in Explorer
+// Open a workspace folder in Explorer. The client sends account IDENTITY, not a
+// path — the server resolves the workspace path from the canonical slug, so the
+// frontend never recomputes (and drifts from) slug logic and never supplies a
+// raw path. realpath containment + execFile (no shell) still guard it.
 app.post("/api/open-folder", requireToken, requireAuthenticated, (req, res) => {
-  const { folderPath } = req.body;
-  // realpath-based containment (defeats sibling-prefix + symlink escape) and
-  // requires the folder to exist; explorer.exe is a real exe so execFile with
-  // the path as a discrete argv entry avoids shell metacharacter parsing.
-  if (!folderPath || !isInsideRoot(folderPath, workspace.WORKSPACE_ROOT, { mustExist: true })) {
-    return res.status(400).json({ error: "Invalid path" });
+  const { serverKey, email, orgId, orgDomain } = req.body;
+  if (!serverKey || !email || !orgDomain) {
+    return res.status(400).json({ error: "Missing identity (serverKey, email, orgDomain)" });
+  }
+  const folderPath = path.join(
+    workspace.WORKSPACE_ROOT,
+    slug.customerSlug(serverKey, orgId, orgDomain, email)
+  );
+  // The path is inside WORKSPACE_ROOT by construction; mustExist guards against
+  // opening a workspace that hasn't been launched yet.
+  if (!isInsideRoot(folderPath, workspace.WORKSPACE_ROOT, { mustExist: true })) {
+    return res.status(404).json({ error: "Workspace folder not found — launch this customer first." });
   }
   try {
     execFile("explorer", [folderPath]);
-    res.json({ ok: true });
+    res.json({ ok: true, folderPath });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
