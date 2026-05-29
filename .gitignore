@@ -8,6 +8,9 @@ packaging/auth-config.prod.json
 .env.*
 *.tmp
 
+# Machine-local Claude Code config (per-user; not shared)
+.claude/settings.local.json
+
 # Build artifacts
 packaging/dist/
 packaging/output/
