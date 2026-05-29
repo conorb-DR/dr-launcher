@@ -1,6 +1,8 @@
 // ───────────────────────────────────────────────────────────────
-// DR Launcher · app.js (Studio design system)
+// DR Launcher · main.mjs (Studio design system) — frontend entry module
 // ───────────────────────────────────────────────────────────────
+import { esc } from "./util.mjs";
+import { serverInfo, getServers, setServers } from "./servers.mjs";
 
 // Auth is an HttpOnly, SameSite=Strict cookie the server sets on `/`. Same-origin
 // fetch + EventSource send it automatically, so the page never handles the token.
@@ -44,24 +46,13 @@ let agentCatalog = [];
 let _prevExpiredIds = null;
 
 // ── Server metadata ──────────────────────────────────────────────
-// Fallback used until /api/servers responds. `host` mirrors the canonical
-// hosts in lib/servers.js BUNDLED_DEFAULTS — keep them in sync (enforced by
-// tests/server-registry.test.js). Build URLs from `.host`, never `.label`.
-let serverList = [
-  { key: "US",  host: "https://app.datarails.com",   label: "app.datarails.com",      color: "#4646CE", soft: "#DFD9FF", text: "#25258C", region: "United States" },
-  { key: "US2", host: "https://us-2.datarails.com",  label: "us-2.datarails.com",     color: "#7B61FF", soft: "#F0EEFF", text: "#5D45D6", region: "United States (instance 2)" },
-  { key: "UK",  host: "https://ukapp.datarails.com", label: "ukapp.datarails.com",    color: "#03A678", soft: "#ECFAE4", text: "#037C5A", region: "United Kingdom" },
-  { key: "CA",  host: "https://caapp.datarails.com", label: "caapp.datarails.com",    color: "#FFA310", soft: "#FFF4D4", text: "#9E5F00", region: "Canada" },
-];
-function serverInfo(key) {
-  return serverList.find((s) => s.key === key) || { key, host: "", label: "", color: "#9EA1AA", soft: "#F0F1F4", text: "#4E566C", region: key };
-}
+// SERVER_FALLBACK + serverInfo/getServers/setServers live in ./servers.mjs.
 async function fetchServers() {
   try {
     const res = await fetch("/api/servers", { headers });
     const data = await res.json();
     if (Array.isArray(data.servers) && data.servers.length > 0) {
-      serverList = data.servers;
+      setServers(data.servers);
     }
   } catch { /* keep fallback */ }
 }
@@ -958,18 +949,7 @@ async function startLogin(serverKey, targetAccountId) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
-// Escape for safe interpolation into HTML text AND attribute values.
-// Pure string replacement (no DOM) so it is testable headless and so that
-// quotes are escaped — the DOM textContent approach left `"`/`'` unescaped,
-// which is unsafe inside attributes like value="${esc(...)}".
-function esc(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+// esc() lives in ./util.mjs (imported above).
 
 function initialsOf(account) {
   const dom = (account.orgDomain || "").replace(/\.[a-z]+$/i, "");
@@ -1146,7 +1126,7 @@ function renderSidebar() {
     <div>
       <div class="sidebar__label">Servers</div>
       <div class="sidebar__items">
-        ${serverList.map((s) => {
+        ${getServers().map((s) => {
           const n = accounts.filter((a) => a.serverKey === s.key).length;
           return navItem("srv-" + s.key,
             "",
@@ -1563,7 +1543,7 @@ function render() {
       <div class="page-header__breadcrumb st-mono">workspace / customers</div>
       <div class="page-header__title-row">
         <h1 class="page-header__title">${pageTitle}</h1>
-        <span class="page-header__meta">${filtered.length} accounts · ${serverList.length} servers · last sync ${timeAgo(lastRefreshedAt)}</span>
+        <span class="page-header__meta">${filtered.length} accounts · ${getServers().length} servers · last sync ${timeAgo(lastRefreshedAt)}</span>
       </div>
       <div class="page-header__actions">
         <button class="st-btn st-btn--ghost" id="head-sort">${ICON.filter} Sort · ${sortMode === "az" ? "A–Z" : sortMode === "server" ? "Server" : "last used"} ${ICON.chev}</button>
@@ -1853,7 +1833,7 @@ function renderEmpty() {
       <h2>Welcome to DR Launcher</h2>
       <p>DR Launcher opens isolated Chrome + Claude Code sessions for each customer account, keeping your work separated. Authenticate a customer below to get started.</p>
       <div class="st-empty__servers">
-        ${serverList.map((s) => `
+        ${getServers().map((s) => `
           <button class="st-empty__server" data-empty-server="${esc(s.key)}">
             <span class="st-empty__server-dot" style="background:${s.color}"></span>
             Connect via ${esc(s.key)}
@@ -2133,7 +2113,7 @@ function showAuthModal() {
         <button class="modal__close" aria-label="Close">${ICON.x}</button>
       </div>
       <div class="modal__body">
-        ${serverList.map((s) => {
+        ${getServers().map((s) => {
           const n = accounts.filter((a) => a.serverKey === s.key).length;
           return `
             <button class="auth-server" data-server="${esc(s.key)}">
@@ -2830,8 +2810,7 @@ function applyTheme(theme) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────
-// Guard so this file can be `require`d headless (tests import esc/serverList).
-if (typeof document !== "undefined") document.addEventListener("DOMContentLoaded", async () => {
+document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("login-btn")?.addEventListener("click", triggerLogin);
   document.getElementById("dev-login-btn")?.addEventListener("click", triggerDevLogin);
   document.getElementById("dev-password")?.addEventListener("keydown", (e) => {
@@ -2898,10 +2877,4 @@ async function initApp() {
   const validIds = new Set(accounts.map((a) => a.id));
   for (const id of [...selectedIds]) { if (!validIds.has(id)) selectedIds.delete(id); }
   batchOrder = batchOrder.filter((id) => validIds.has(id));
-}
-
-// Headless export for tests (no-op in the browser). Exposes the pure helpers
-// and the fallback server list so tests can verify esc() and host parity.
-if (typeof module !== "undefined" && module.exports) {
-  module.exports = { esc, serverInfo, serverList };
 }

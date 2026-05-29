@@ -1,12 +1,16 @@
-const { describe, it } = require("node:test");
+const { describe, it, before } = require("node:test");
 const assert = require("node:assert/strict");
 
 // P3-3: esc() must escape the five HTML-significant chars, including BOTH
 // quote styles, because it is interpolated into attribute values
 // (e.g. value="${esc(...)}", data-id="${esc(...)}"). Pure function — no jsdom.
-const { esc } = require("../public/app.js");
-
+// esc() now lives in the ES module public/js/util.mjs; dynamic import() lets
+// this CommonJS test consume it without renaming the file to .mjs (so the
+// tests/**/*.test.js glob still discovers it).
 describe("esc() (P3-3)", () => {
+  let esc;
+  before(async () => { ({ esc } = await import("../public/js/util.mjs")); });
+
   it("escapes < and >", () => {
     assert.equal(esc("<script>"), "&lt;script&gt;");
   });
