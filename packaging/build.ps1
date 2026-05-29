@@ -118,10 +118,6 @@ foreach ($d in $dirsToCopy) {
     }
 }
 
-# Remove smoke-test.html from dist
-$smokeTest = Join-Path $appDist "public\smoke-test.html"
-if (Test-Path $smokeTest) { Remove-Item $smokeTest }
-
 # --- Step 4: Install production dependencies ---
 Write-Host "Installing production dependencies..."
 Push-Location $appDist

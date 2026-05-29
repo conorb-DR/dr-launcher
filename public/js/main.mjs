@@ -1,6 +1,9 @@
 // ───────────────────────────────────────────────────────────────
-// DR Launcher · app.js (Studio design system)
+// DR Launcher · main.mjs (Studio design system) — frontend entry module
 // ───────────────────────────────────────────────────────────────
+import { esc } from "./util.mjs";
+import { serverInfo, getServers, setServers } from "./servers.mjs";
+import { ICON } from "./icons.mjs";
 
 // Auth is an HttpOnly, SameSite=Strict cookie the server sets on `/`. Same-origin
 // fetch + EventSource send it automatically, so the page never handles the token.
@@ -44,24 +47,13 @@ let agentCatalog = [];
 let _prevExpiredIds = null;
 
 // ── Server metadata ──────────────────────────────────────────────
-// Fallback used until /api/servers responds. `host` mirrors the canonical
-// hosts in lib/servers.js BUNDLED_DEFAULTS — keep them in sync (enforced by
-// tests/server-registry.test.js). Build URLs from `.host`, never `.label`.
-let serverList = [
-  { key: "US",  host: "https://app.datarails.com",   label: "app.datarails.com",      color: "#4646CE", soft: "#DFD9FF", text: "#25258C", region: "United States" },
-  { key: "US2", host: "https://us-2.datarails.com",  label: "us-2.datarails.com",     color: "#7B61FF", soft: "#F0EEFF", text: "#5D45D6", region: "United States (instance 2)" },
-  { key: "UK",  host: "https://ukapp.datarails.com", label: "ukapp.datarails.com",    color: "#03A678", soft: "#ECFAE4", text: "#037C5A", region: "United Kingdom" },
-  { key: "CA",  host: "https://caapp.datarails.com", label: "caapp.datarails.com",    color: "#FFA310", soft: "#FFF4D4", text: "#9E5F00", region: "Canada" },
-];
-function serverInfo(key) {
-  return serverList.find((s) => s.key === key) || { key, host: "", label: "", color: "#9EA1AA", soft: "#F0F1F4", text: "#4E566C", region: key };
-}
+// SERVER_FALLBACK + serverInfo/getServers/setServers live in ./servers.mjs.
 async function fetchServers() {
   try {
     const res = await fetch("/api/servers", { headers });
     const data = await res.json();
     if (Array.isArray(data.servers) && data.servers.length > 0) {
-      serverList = data.servers;
+      setServers(data.servers);
     }
   } catch { /* keep fallback */ }
 }
@@ -958,18 +950,7 @@ async function startLogin(serverKey, targetAccountId) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
-// Escape for safe interpolation into HTML text AND attribute values.
-// Pure string replacement (no DOM) so it is testable headless and so that
-// quotes are escaped — the DOM textContent approach left `"`/`'` unescaped,
-// which is unsafe inside attributes like value="${esc(...)}".
-function esc(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+// esc() lives in ./util.mjs (imported above).
 
 function initialsOf(account) {
   const dom = (account.orgDomain || "").replace(/\.[a-z]+$/i, "");
@@ -1011,37 +992,7 @@ function timeAgo(date) {
   return `${Math.floor(s / 60)}m ago`;
 }
 
-const ICON = {
-  rocket: `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.3-.05-3.05a2.07 2.07 0 0 0-2.95.05Z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2Z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>`,
-  shield: `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>`,
-  copy:   `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
-  more:   `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="6" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="18" r="1"/></svg>`,
-  chev:   `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
-  user:   `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
-  clock:  `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`,
-  filter: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M6 12h12M10 18h4"/></svg>`,
-  plus:   `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`,
-  refresh:`<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3.06-6.78L21 8"/><path d="M21 3v5h-5"/></svg>`,
-  arrow:  `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 5l7 7-7 7"/></svg>`,
-  x:      `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`,
-  star:   `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
-  starFilled: `<svg class="ic" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
-  grip:   `<svg class="ic" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>`,
-  sun:    `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`,
-  moon:   `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/></svg>`,
-  stop:   `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>`,
-  zap:    `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
-  checkCircle: `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg>`,
-  xCircle: `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>`,
-  alertTriangle: `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
-  terminal: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
-  book: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></svg>`,
-  externalLink: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`,
-  desktop: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>`,
-  settings: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>`,
-  help: `<svg class="ic ic--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
-  search: `<svg class="ic ic--xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`,
-};
+// ICON moved to ./icons.mjs (imported above).
 
 // ── Topbar rendering ─────────────────────────────────────────────
 function renderTopbar() {
@@ -1146,7 +1097,7 @@ function renderSidebar() {
     <div>
       <div class="sidebar__label">Servers</div>
       <div class="sidebar__items">
-        ${serverList.map((s) => {
+        ${getServers().map((s) => {
           const n = accounts.filter((a) => a.serverKey === s.key).length;
           return navItem("srv-" + s.key,
             "",
@@ -1563,7 +1514,7 @@ function render() {
       <div class="page-header__breadcrumb st-mono">workspace / customers</div>
       <div class="page-header__title-row">
         <h1 class="page-header__title">${pageTitle}</h1>
-        <span class="page-header__meta">${filtered.length} accounts · ${serverList.length} servers · last sync ${timeAgo(lastRefreshedAt)}</span>
+        <span class="page-header__meta">${filtered.length} accounts · ${getServers().length} servers · last sync ${timeAgo(lastRefreshedAt)}</span>
       </div>
       <div class="page-header__actions">
         <button class="st-btn st-btn--ghost" id="head-sort">${ICON.filter} Sort · ${sortMode === "az" ? "A–Z" : sortMode === "server" ? "Server" : "last used"} ${ICON.chev}</button>
@@ -1853,7 +1804,7 @@ function renderEmpty() {
       <h2>Welcome to DR Launcher</h2>
       <p>DR Launcher opens isolated Chrome + Claude Code sessions for each customer account, keeping your work separated. Authenticate a customer below to get started.</p>
       <div class="st-empty__servers">
-        ${serverList.map((s) => `
+        ${getServers().map((s) => `
           <button class="st-empty__server" data-empty-server="${esc(s.key)}">
             <span class="st-empty__server-dot" style="background:${s.color}"></span>
             Connect via ${esc(s.key)}
@@ -2133,7 +2084,7 @@ function showAuthModal() {
         <button class="modal__close" aria-label="Close">${ICON.x}</button>
       </div>
       <div class="modal__body">
-        ${serverList.map((s) => {
+        ${getServers().map((s) => {
           const n = accounts.filter((a) => a.serverKey === s.key).length;
           return `
             <button class="auth-server" data-server="${esc(s.key)}">
@@ -2830,8 +2781,7 @@ function applyTheme(theme) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────
-// Guard so this file can be `require`d headless (tests import esc/serverList).
-if (typeof document !== "undefined") document.addEventListener("DOMContentLoaded", async () => {
+document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("login-btn")?.addEventListener("click", triggerLogin);
   document.getElementById("dev-login-btn")?.addEventListener("click", triggerDevLogin);
   document.getElementById("dev-password")?.addEventListener("keydown", (e) => {
@@ -2898,10 +2848,4 @@ async function initApp() {
   const validIds = new Set(accounts.map((a) => a.id));
   for (const id of [...selectedIds]) { if (!validIds.has(id)) selectedIds.delete(id); }
   batchOrder = batchOrder.filter((id) => validIds.has(id));
-}
-
-// Headless export for tests (no-op in the browser). Exposes the pure helpers
-// and the fallback server list so tests can verify esc() and host parity.
-if (typeof module !== "undefined" && module.exports) {
-  module.exports = { esc, serverInfo, serverList };
 }

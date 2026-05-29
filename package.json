@@ -8,10 +8,15 @@
     "test": "node --test tests/**/*.test.js",
     "lint:paths": "node scripts/lint-agent-paths.js",
     "gen:server-maps": "node scripts/gen-server-maps.js",
-    "check:server-maps": "node scripts/gen-server-maps.js --check"
+    "check:server-maps": "node scripts/gen-server-maps.js --check",
+    "check:frontend": "node scripts/check-frontend-syntax.js",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@azure/msal-node": "^5.2.1",
     "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
   }
 }

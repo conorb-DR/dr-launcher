@@ -11,6 +11,11 @@ packaging/auth-config.prod.json
 # Machine-local Claude Code config (per-user; not shared)
 .claude/settings.local.json
 
+# Playwright e2e artifacts
+test-results/
+playwright-report/
+blob-report/
+
 # Build artifacts
 packaging/dist/
 packaging/output/

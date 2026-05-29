@@ -1,4 +1,4 @@
-const { describe, it } = require("node:test");
+const { describe, it, before } = require("node:test");
 const assert = require("node:assert/strict");
 const { spawnSync } = require("child_process");
 const fs = require("fs");
@@ -11,7 +11,6 @@ const path = require("path");
 const servers = require("../lib/servers");
 const apiPutWidget = require("../agents/dashboard-agent/scripts/api-put-widget.js");
 const downloadFilebox = require("../agents/datamapper-agent/scripts/download-filebox.js");
-const app = require("../public/app.js");
 
 const GRID_ENGINE = path.join(
   __dirname, "..", "agents", "dashboard-agent", "scripts", "grid-engine.js"
@@ -23,6 +22,10 @@ const CANON = {};
 for (const s of servers.BUNDLED_DEFAULTS) CANON[s.key] = s.host;
 
 describe("server registry single-source-of-truth (P1-3)", () => {
+  // SERVER_FALLBACK moved from public/app.js to the ES module public/js/servers.mjs.
+  let SERVER_FALLBACK;
+  before(async () => { ({ SERVER_FALLBACK } = await import("../public/js/servers.mjs")); });
+
   it("api-put-widget.js SERVER_URLS match canonical hosts", () => {
     for (const [key, host] of Object.entries(apiPutWidget.SERVER_URLS)) {
       assert.equal(host, CANON[key], `api-put-widget ${key} host mismatch`);
@@ -39,10 +42,10 @@ describe("server registry single-source-of-truth (P1-3)", () => {
     assert.ok(!("EU" in downloadFilebox.SERVER_URLS), "EU is not a real Datarails server");
   });
 
-  it("app.js fallback serverList hosts match canonical hosts", () => {
-    for (const entry of app.serverList) {
+  it("servers.mjs SERVER_FALLBACK hosts match canonical hosts", () => {
+    for (const entry of SERVER_FALLBACK) {
       assert.ok(entry.host, `fallback entry ${entry.key} must have a host`);
-      assert.equal(entry.host, CANON[entry.key], `app.js fallback ${entry.key} host mismatch`);
+      assert.equal(entry.host, CANON[entry.key], `servers.mjs fallback ${entry.key} host mismatch`);
     }
   });
 });
