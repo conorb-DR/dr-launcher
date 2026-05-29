@@ -2,7 +2,7 @@
 // DR Launcher · app.js (Studio design system)
 // ───────────────────────────────────────────────────────────────
 
-const API_TOKEN = window.__DR_TOKEN__;
+const API_TOKEN = (typeof window !== "undefined") ? window.__DR_TOKEN__ : null;
 
 const headers = {
   "Content-Type": "application/json",
@@ -42,14 +42,17 @@ let agentCatalog = [];
 let _prevExpiredIds = null;
 
 // ── Server metadata ──────────────────────────────────────────────
+// Fallback used until /api/servers responds. `host` mirrors the canonical
+// hosts in lib/servers.js BUNDLED_DEFAULTS — keep them in sync (enforced by
+// tests/server-registry.test.js). Build URLs from `.host`, never `.label`.
 let serverList = [
-  { key: "US",  label: "app.datarails.com",      color: "#4646CE", soft: "#DFD9FF", text: "#25258C", region: "United States" },
-  { key: "US2", label: "us-2.datarails.com",     color: "#7B61FF", soft: "#F0EEFF", text: "#5D45D6", region: "United States (instance 2)" },
-  { key: "UK",  label: "ukapp.datarails.com",    color: "#03A678", soft: "#ECFAE4", text: "#037C5A", region: "United Kingdom" },
-  { key: "CA",  label: "caapp.datarails.com",    color: "#FFA310", soft: "#FFF4D4", text: "#9E5F00", region: "Canada" },
+  { key: "US",  host: "https://app.datarails.com",   label: "app.datarails.com",      color: "#4646CE", soft: "#DFD9FF", text: "#25258C", region: "United States" },
+  { key: "US2", host: "https://us-2.datarails.com",  label: "us-2.datarails.com",     color: "#7B61FF", soft: "#F0EEFF", text: "#5D45D6", region: "United States (instance 2)" },
+  { key: "UK",  host: "https://ukapp.datarails.com", label: "ukapp.datarails.com",    color: "#03A678", soft: "#ECFAE4", text: "#037C5A", region: "United Kingdom" },
+  { key: "CA",  host: "https://caapp.datarails.com", label: "caapp.datarails.com",    color: "#FFA310", soft: "#FFF4D4", text: "#9E5F00", region: "Canada" },
 ];
 function serverInfo(key) {
-  return serverList.find((s) => s.key === key) || { key, label: "", color: "#9EA1AA", soft: "#F0F1F4", text: "#4E566C", region: key };
+  return serverList.find((s) => s.key === key) || { key, host: "", label: "", color: "#9EA1AA", soft: "#F0F1F4", text: "#4E566C", region: key };
 }
 async function fetchServers() {
   try {
@@ -929,10 +932,17 @@ async function startLogin(serverKey, targetAccountId) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
+// Escape for safe interpolation into HTML text AND attribute values.
+// Pure string replacement (no DOM) so it is testable headless and so that
+// quotes are escaped — the DOM textContent approach left `"`/`'` unescaped,
+// which is unsafe inside attributes like value="${esc(...)}".
 function esc(str) {
-  const el = document.createElement("span");
-  el.textContent = str == null ? "" : String(str);
-  return el.innerHTML;
+  return String(str == null ? "" : str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function initialsOf(account) {
@@ -1891,7 +1901,7 @@ function showMoreActionsMenu(anchor, acct, evt) {
     { label: "Copy CLI flags", action() { copyInstruction(acct); } },
     { label: favoriteIds.has(acct.id) ? "Remove from favorites" : "Add to favorites", action() { toggleFavorite(acct.id); } },
     "---",
-    { label: "Open in browser", action() { window.open(acct.serverHost || serverInfo(acct.serverKey).label, "_blank"); } },
+    { label: "Open in browser", action() { window.open(acct.serverHost || serverInfo(acct.serverKey).host, "_blank"); } },
   ];
   const wsSlug = workspace_slug(acct.serverKey, acct.orgId, acct.orgDomain);
   if (healthChecks?.workspaceRoot?.path) {
@@ -2740,7 +2750,8 @@ function applyTheme(theme) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────
-document.addEventListener("DOMContentLoaded", async () => {
+// Guard so this file can be `require`d headless (tests import esc/serverList).
+if (typeof document !== "undefined") document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("login-btn")?.addEventListener("click", triggerLogin);
   document.getElementById("dev-login-btn")?.addEventListener("click", triggerDevLogin);
   document.getElementById("dev-password")?.addEventListener("keydown", (e) => {
@@ -2807,4 +2818,10 @@ async function initApp() {
   const validIds = new Set(accounts.map((a) => a.id));
   for (const id of [...selectedIds]) { if (!validIds.has(id)) selectedIds.delete(id); }
   batchOrder = batchOrder.filter((id) => validIds.has(id));
+}
+
+// Headless export for tests (no-op in the browser). Exposes the pure helpers
+// and the fallback server list so tests can verify esc() and host parity.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { esc, serverInfo, serverList };
 }
