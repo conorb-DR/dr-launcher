@@ -774,7 +774,7 @@ html, body {
 /* ── Table ──────────────────────────────────────────────────────── */
 .tbl__col-header {
   display: grid;
-  grid-template-columns: 32px 1fr 110px 220px 130px 110px 200px;
+  grid-template-columns: 32px 1fr minmax(110px, auto) 220px 130px 110px 200px;
   gap: 14px;
   align-items: center;
   padding: 10px 28px;
@@ -789,7 +789,7 @@ html, body {
 
 .tbl__row {
   display: grid;
-  grid-template-columns: 32px 1fr 110px 220px 130px 110px 200px;
+  grid-template-columns: 32px 1fr minmax(110px, auto) 220px 130px 110px 200px;
   gap: 14px;
   align-items: center;
   padding: 12px 28px;
@@ -805,6 +805,7 @@ html, body {
 .tbl__row[data-state="active"]  { background: var(--st-state-active-tint); }
 .tbl__row[data-state="stale"]   { background: var(--st-state-stale-tint); }
 .tbl__row[data-state="reauth"]  { background: var(--st-state-reauth-tint); }
+.tbl__row[data-state="active-reauth"] { background: var(--st-state-active-tint); }
 .tbl__row[data-state="failed"]  { background: var(--st-state-failed-tint); }
 
 /* Checkbox */
@@ -889,6 +890,8 @@ html, body {
 .st-badge--stale   .st-badge__dot { background: var(--st-state-stale-dot); }
 .st-badge--reauth  { background: var(--st-state-reauth-bg);  color: var(--st-state-reauth-fg); }
 .st-badge--reauth  .st-badge__dot { background: var(--st-state-reauth-dot); }
+.st-badge--active-reauth { background: var(--st-state-active-bg); color: var(--st-state-reauth-fg); border: 1px solid var(--st-state-reauth-dot); }
+.st-badge--active-reauth .st-badge__dot { background: var(--st-state-reauth-dot); animation: pulse-dot 2s ease-in-out infinite; }
 .st-badge--failed  { background: var(--st-state-failed-bg);  color: var(--st-state-failed-fg); }
 .st-badge--failed  .st-badge__dot { background: var(--st-state-failed-dot); }
 .st-badge--queued  { background: var(--st-state-queued-bg);  color: var(--st-state-queued-fg); }
@@ -1092,6 +1095,7 @@ html, body {
   margin-bottom: 16px;
 }
 @keyframes st-spin { to { transform: rotate(360deg); } }
+@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
 .st-empty {
   padding: 48px;
@@ -1762,3 +1766,86 @@ html, body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--st-hair); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--st-ink-faint); }
+
+/* ── Split button group ────────────────────────────────────────── */
+.st-btn-group {
+  display: inline-flex;
+  align-items: stretch;
+}
+.st-btn-group > .st-btn:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.st-btn-group > .st-btn-split {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid rgba(255,255,255,0.18);
+  cursor: pointer;
+}
+.st-btn-group > .st-btn-split svg { width: 12px; height: 12px; }
+
+/* ── Status row (horizontal badges) ────────────────────────────── */
+.st-status-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+/* ── Agent badge ───────────────────────────────────────────────── */
+.st-badge--agent {
+  background: var(--st-accent-bg);
+  color: var(--st-accent-ink);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-badge--agent .st-badge__dot {
+  background: var(--st-accent);
+}
+
+/* ── Agent modal form fields ───────────────────────────────────── */
+.agent-form { display: flex; flex-direction: column; gap: 14px; }
+.agent-form__group { display: flex; flex-direction: column; gap: 4px; }
+.agent-form__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--st-ink-soft);
+}
+.agent-form__hint {
+  font-size: 11px;
+  color: var(--st-ink-faint);
+  margin-top: 2px;
+}
+.agent-form__input,
+.agent-form__select,
+.agent-form__textarea {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--st-hair);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--st-panel);
+  color: var(--st-ink);
+  font-family: inherit;
+}
+.agent-form__textarea { min-height: 72px; resize: vertical; }
+.agent-form__input:focus,
+.agent-form__select:focus,
+.agent-form__textarea:focus {
+  outline: none;
+  border-color: var(--st-accent);
+  box-shadow: 0 0 0 2px var(--st-accent-bg);
+}
+.agent-form__footer-hint {
+  font-size: 11px;
+  color: var(--st-ink-faint);
+  text-align: center;
+  padding-top: 4px;
+}

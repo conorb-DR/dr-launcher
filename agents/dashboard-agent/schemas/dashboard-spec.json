@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DashboardSpec",
+  "description": "Standard intermediate format shared between all Dashboard Agent skills",
+  "type": "object",
+  "required": ["meta", "dashboard", "widgets"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "description": "Session metadata — set by interpret/plan, carried through build",
+      "required": ["server", "created_at", "stage"],
+      "properties": {
+        "server": { "type": "string", "enum": ["US", "US2", "UK", "CA", "DEV", "DEV-1", "TEST", "DEMO"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "stage": { "type": "string", "enum": ["draft", "planned", "building", "built", "audited", "repaired"] },
+        "source": { "type": "string", "description": "Origin of this spec: 'text', 'excel', 'screenshot', 'existing'" },
+        "spec_file": { "type": "string", "description": "Absolute path to this spec file on disk" }
+      }
+    },
+    "dashboard": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "id": { "type": ["integer", "null"], "description": "Filled in by dashboard-build after creation" },
+        "description": { "type": "string" }
+      }
+    },
+    "widgets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id_local", "type", "name"],
+        "properties": {
+          "id_local": { "type": "string", "description": "Local reference ID (e.g. 'w1', 'w2') — stable across edits" },
+          "id_remote": { "type": ["integer", "null"], "description": "Datarails widget ID — filled in by dashboard-build" },
+          "type": {
+            "type": "string",
+            "enum": ["kpi", "chart", "pie", "table", "gauge", "waterfall", "text"]
+          },
+          "name": { "type": "string", "description": "Widget display name" },
+          "title": { "type": "string", "description": "Chart title (defaults to name)" },
+
+          "data": {
+            "type": "object",
+            "description": "Data source config — not required for type=text",
+            "properties": {
+              "template_id": { "type": "integer" },
+              "template_name": { "type": "string", "description": "Human label for plan readability" },
+              "value_field": { "type": "string" },
+              "agg": { "type": "string", "enum": ["SUM", "COUNT", "COUNT_UNIQUE", "UNIQUE_VALUES", "AVG", "MIN", "MAX"], "default": "SUM" },
+              "format": { "type": "string", "default": "money" },
+              "group_by": { "type": "array", "items": { "type": "string" } },
+              "time_by": { "type": "array", "items": { "type": "string" } },
+              "filters": { "type": "array", "items": { "type": "string" }, "description": "include filters: 'Field=V1,V2'" },
+              "excludes": { "type": "array", "items": { "type": "string" } },
+              "contains": { "type": "array", "items": { "type": "string" } },
+              "date_filters": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+
+          "type_options": {
+            "type": "object",
+            "description": "Type-specific options",
+            "properties": {
+              "chart_type": { "type": "string", "enum": ["column", "bar", "line", "area"], "description": "chart widgets only" },
+              "stacked": { "type": "boolean" },
+              "percent": { "type": "boolean" },
+              "smooth": { "type": "boolean" },
+              "drilldown": { "type": "boolean", "description": "pie only" },
+              "gauge_type": { "type": "string", "enum": ["enhanced", "dynamic-goal"] },
+              "waterfall_type": { "type": "string", "enum": ["breakdown", "walkthrough"] }
+            }
+          },
+
+          "text_content": { "type": "string", "description": "HTML or plain text — type=text widgets only" },
+
+          "layout": {
+            "type": "object",
+            "description": "Grid position — filled in by grid engine during plan stage",
+            "required": ["x", "y", "width", "height"],
+            "properties": {
+              "x": { "type": "integer", "minimum": 0, "maximum": 11 },
+              "y": { "type": "integer", "minimum": 0 },
+              "width": { "type": "integer", "minimum": 1, "maximum": 12 },
+              "height": { "type": "integer", "minimum": 1 }
+            }
+          },
+
+          "status": {
+            "type": "string",
+            "enum": ["pending", "created", "no_data", "error", "fixed"],
+            "description": "Filled in by build/audit/repair"
+          },
+          "status_detail": { "type": "string", "description": "Error message or audit note" },
+
+          "notes": { "type": "string", "description": "IM/SE notes about this widget" }
+        }
+      }
+    }
+  }
+}

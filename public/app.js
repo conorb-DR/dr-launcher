@@ -38,6 +38,8 @@ let launchErrors = [];
 let sortMode = "lastUsed";
 let lastRefreshedAt = null;
 let statusFilter = "all"; // "all" | "active" | "stale" | "reauth" | "idle"
+let agentCatalog = [];
+let _prevExpiredIds = null;
 
 // ── Server metadata ──────────────────────────────────────────────
 let serverList = [
@@ -67,6 +69,7 @@ function rowState(account) {
   if (launchInProgress && activeLaunch?.orgDomain === account.orgDomain) return "launching";
   if (session) {
     if (session.status === "stale") return "stale";
+    if (account.cliAuthStatus === "expired") return "active-reauth";
     return "active";
   }
   if (account.cliAuthStatus === "expired") return "reauth";
@@ -77,6 +80,7 @@ function rowState(account) {
 
 const ST_STATE_LABELS = {
   active: "Active",
+  "active-reauth": "Active · re-auth needed",
   stale: "Stale",
   reauth: "Needs re-auth",
   failed: "Partial launch",
@@ -334,6 +338,15 @@ async function fetchSessions() {
   }
 }
 
+async function fetchAgents() {
+  try {
+    const res = await fetch("/api/agents", { headers });
+    if (!res.ok) { agentCatalog = []; return; }
+    const data = await res.json();
+    agentCatalog = Array.isArray(data.agents) ? data.agents : [];
+  } catch { agentCatalog = []; }
+}
+
 async function checkSessionHealth() {
   try {
     await fetch("/api/sessions/health", { headers });
@@ -521,9 +534,9 @@ function filterAccounts(list) {
   if (statusFilter !== "all") {
     out = out.filter((a) => {
       const s = rowState(a);
-      if (statusFilter === "active") return s === "active";
+      if (statusFilter === "active") return s === "active" || s === "active-reauth";
       if (statusFilter === "stale") return s === "stale";
-      if (statusFilter === "reauth") return s === "reauth";
+      if (statusFilter === "reauth") return s === "reauth" || s === "active-reauth";
       if (statusFilter === "idle") return s === "idle";
       return true;
     });
@@ -638,6 +651,8 @@ async function launchCustomer(account, opts = {}) {
   try {
     const payload = { ...account };
     if (opts.noSwitch) payload.noSwitch = true;
+    if (opts.agentId) payload.agentId = opts.agentId;
+    if (opts.agentInputs) payload.agentInputs = opts.agentInputs;
     const res = await fetch("/api/launch", {
       method: "POST",
       headers,
@@ -757,7 +772,7 @@ async function launchCustomer(account, opts = {}) {
   }
 }
 
-async function launchBatchQueue() {
+async function launchBatchQueue(agentOpts = null) {
   const ids = batchOrder.length > 0 ? [...batchOrder] : [...selectedIds];
   if (ids.length === 0 || launchInProgress) return;
   const isBatch = ids.length > 1;
@@ -770,7 +785,7 @@ async function launchBatchQueue() {
     batchQueue.current = i;
     const acct = accounts.find((a) => a.id === ids[i]);
     if (!acct) { results.push({ ok: false, account: null }); continue; }
-    const result = await launchCustomer(acct, { quiet: true, noSwitch: isBatch });
+    const result = await launchCustomer(acct, { quiet: true, noSwitch: isBatch, ...(agentOpts || {}) });
     results.push(result);
     if (result.ok && result.desktopName) lastDesktopName = result.desktopName;
     if (i < ids.length - 1) await new Promise((r) => setTimeout(r, 1500));
@@ -867,14 +882,14 @@ For every dr command, include:
 Never rely on the default dr account for this task.`;
 }
 
-async function startLogin(serverKey) {
+async function startLogin(serverKey, targetAccountId) {
   closeModal();
   showToast(`Starting authentication for ${serverKey}… Complete login in the browser window.`);
   try {
     await fetch("/api/login", {
       method: "POST",
       headers,
-      body: JSON.stringify({ server: serverKey }),
+      body: JSON.stringify({ server: serverKey, accountId: targetAccountId || null }),
     });
     let polls = 0;
     const maxPolls = 40;
@@ -882,14 +897,25 @@ async function startLogin(serverKey) {
     const interval = setInterval(async () => {
       polls++;
       try {
-        const res = await fetch("/api/accounts", { headers });
+        const res = await fetch("/api/accounts?force=1", { headers });
         const data = await res.json();
         const newAccounts = data.accounts || [];
+        if (targetAccountId) {
+          const target = newAccounts.find((a) => a.id === targetAccountId);
+          if (target && target.cliAuthStatus !== "expired") {
+            clearInterval(interval);
+            accounts = newAccounts;
+            render();
+            showToast(`Re-authenticated ${target.orgDomain || serverKey}.`);
+            return;
+          }
+        }
         if (newAccounts.length > prevCount) {
           clearInterval(interval);
           accounts = newAccounts;
           render();
           showToast("New customer account detected.");
+          return;
         }
       } catch { /* ignore */ }
       if (polls >= maxPolls) {
@@ -1039,9 +1065,9 @@ function renderSidebar() {
   const total = accounts.length;
   const recent = recentLaunches.length;
   const favCount = favoriteIds.size;
-  const activeCount = accounts.filter((a) => rowState(a) === "active" || rowState(a) === "stale").length;
+  const activeCount = accounts.filter((a) => { const s = rowState(a); return s === "active" || s === "stale" || s === "active-reauth"; }).length;
   const queueCount = selectedIds.size;
-  const reauthCount = accounts.filter((a) => rowState(a) === "reauth").length;
+  const reauthCount = accounts.filter((a) => { const s = rowState(a); return s === "reauth" || s === "active-reauth"; }).length;
 
   const navItem = (key, icon, label, count, opts = {}) => {
     const isActive = opts.active || false;
@@ -1181,8 +1207,9 @@ function renderLaunchStrip() {
   const el = document.getElementById("launch-strip");
   if (!el) return;
 
-  const activeCount = accounts.filter((a) => rowState(a) === "active").length;
+  const activeCount = accounts.filter((a) => { const s = rowState(a); return s === "active" || s === "active-reauth"; }).length;
   const staleCount = accounts.filter((a) => rowState(a) === "stale").length;
+  const reauthCount = accounts.filter((a) => { const s = rowState(a); return s === "reauth" || s === "active-reauth"; }).length;
   const selCount = selectedIds.size;
 
   if (launchInProgress && activeLaunch) {
@@ -1206,6 +1233,7 @@ function renderLaunchStrip() {
         ${selCount > 0 ? `<span>queue <strong>${selCount}</strong>/${accounts.length}</span><span class="strip__counts-sep"></span>` : ""}
         ${activeCount > 0 ? `<span style="color:var(--st-state-active-fg);font-weight:600">● ${activeCount} active</span>` : ""}
         ${staleCount > 0 ? `<span style="color:var(--st-state-stale-fg);font-weight:600">● ${staleCount} stale</span>` : ""}
+        ${reauthCount > 0 ? `<span style="color:var(--st-state-reauth-fg,#6366f1);font-weight:600">● ${reauthCount} re-auth</span>` : ""}
       </span>
       <span class="strip__actions">
         <button class="st-btn st-btn--ghost st-btn--sm" id="strip-log">View log</button>
@@ -1237,14 +1265,20 @@ function renderLaunchStrip() {
       <span class="strip__counts">
         ${activeCount > 0 ? `<span style="color:var(--st-state-active-fg);font-weight:600">● ${activeCount} active</span>` : ""}
         ${staleCount > 0 ? `<span style="color:var(--st-state-stale-fg);font-weight:600">● ${staleCount} stale</span>` : ""}
+        ${reauthCount > 0 ? `<span style="color:var(--st-state-reauth-fg,#6366f1);font-weight:600">● ${reauthCount} re-auth</span>` : ""}
       </span>
       <span class="strip__actions">
         <button class="st-btn st-btn--ghost st-btn--sm" id="strip-clear">Clear</button>
+        ${agentCatalog.length > 0 ? `<button class="st-btn st-btn--outline st-btn--sm" id="strip-launch-agent">${ICON.zap} with Agent</button>` : ""}
         <button class="st-btn st-btn--primary st-btn--sm" id="strip-launch">${ICON.rocket} Launch (${selCount})</button>
       </span>
     `;
     el.querySelector("#strip-clear")?.addEventListener("click", clearSelection);
-    el.querySelector("#strip-launch")?.addEventListener("click", launchBatchQueue);
+    el.querySelector("#strip-launch")?.addEventListener("click", () => launchBatchQueue());
+    el.querySelector("#strip-launch-agent")?.addEventListener("click", (e) => {
+      const selectedAccts = accounts.filter((a) => selectedIds.has(a.id));
+      showAgentPickerDropdown(el.querySelector("#strip-launch-agent"), selectedAccts, e);
+    });
   } else {
     el.innerHTML = `
       <span class="strip__hints">
@@ -1256,7 +1290,8 @@ function renderLaunchStrip() {
       <span class="strip__counts">
         ${activeCount > 0 ? `<span style="color:var(--st-state-active-fg);font-weight:600">● ${activeCount} active</span>` : ""}
         ${staleCount > 0 ? `<span style="color:var(--st-state-stale-fg);font-weight:600">● ${staleCount} stale</span>` : ""}
-        ${activeCount === 0 && staleCount === 0 ? `<span>No active sessions</span>` : ""}
+        ${reauthCount > 0 ? `<span style="color:var(--st-state-reauth-fg,#6366f1);font-weight:600">● ${reauthCount} re-auth</span>` : ""}
+        ${activeCount === 0 && staleCount === 0 && reauthCount === 0 ? `<span>No active sessions</span>` : ""}
       </span>
       <span></span>
     `;
@@ -1271,8 +1306,11 @@ function renderRow(a) {
   const si = serverInfo(a.serverKey);
   const disabled = launchInProgress;
 
+  const agentBadge = session?.agentId
+    ? ` <span class="st-badge st-badge--agent"><span class="st-badge__dot"></span>${ICON.zap} ${esc(session.agentName || session.agentId)}</span>`
+    : "";
   const badgeHtml = state !== "idle"
-    ? `<span class="st-badge st-badge--${state}"><span class="st-badge__dot"></span>${esc(ST_STATE_LABELS[state] || state)}</span>`
+    ? `<span class="st-status-row"><span class="st-badge st-badge--${state}"><span class="st-badge__dot"></span>${esc(ST_STATE_LABELS[state] || state)}</span>${agentBadge}</span>`
     : `<span class="tbl__idle-dash">—</span>`;
 
   let actionsHtml = "";
@@ -1286,6 +1324,13 @@ function renderRow(a) {
     actionsHtml = `
       <button class="st-btn st-btn--stale st-btn--sm" data-row-action="launch" data-account-id="${esc(a.id)}">Relaunch</button>
       <button class="st-btn st-btn--ghost st-btn--sm" data-row-action="close-session" data-account-id="${esc(a.id)}" data-session-id="${esc(session?.sessionId || "")}">Recover</button>
+      <button class="st-kebab" data-row-action="more" data-account-id="${esc(a.id)}" title="More actions">${ICON.more}</button>
+    `;
+  } else if (state === "active-reauth") {
+    actionsHtml = `
+      <button class="st-btn st-btn--primary st-btn--sm" data-row-action="switch" data-account-id="${esc(a.id)}">${ICON.desktop} Switch</button>
+      <button class="st-btn st-btn--reauth st-btn--sm" data-row-action="reauth" data-account-id="${esc(a.id)}">Re-authenticate</button>
+      <button class="st-btn st-btn--destructive st-btn--sm" data-row-action="close-session" data-account-id="${esc(a.id)}" data-session-id="${esc(session?.sessionId || "")}">End</button>
       <button class="st-kebab" data-row-action="more" data-account-id="${esc(a.id)}" title="More actions">${ICON.more}</button>
     `;
   } else if (state === "reauth") {
@@ -1302,13 +1347,16 @@ function renderRow(a) {
       <span class="st-badge st-badge--launching"><span class="st-badge__dot"></span>Launching…</span>
     `;
   } else {
+    const splitBtn = agentCatalog.length > 0
+      ? `<span class="st-btn-group"><button class="st-btn st-btn--primary st-btn--sm" data-row-action="launch" data-account-id="${esc(a.id)}" ${disabled ? "disabled" : ""}>${ICON.rocket} Launch</button><button class="st-btn st-btn--primary st-btn--sm st-btn-split" data-row-action="launch-agent" data-account-id="${esc(a.id)}" ${disabled ? "disabled" : ""} title="Launch with Agent">${ICON.chev}</button></span>`
+      : `<button class="st-btn st-btn--primary st-btn--sm" data-row-action="launch" data-account-id="${esc(a.id)}" ${disabled ? "disabled" : ""}>${ICON.rocket} Launch</button>`;
     actionsHtml = `
-      <button class="st-btn st-btn--primary st-btn--sm" data-row-action="launch" data-account-id="${esc(a.id)}" ${disabled ? "disabled" : ""}>${ICON.rocket} Launch</button>
+      ${splitBtn}
       <button class="st-kebab" data-row-action="more" data-account-id="${esc(a.id)}" title="More actions">${ICON.more}</button>
     `;
   }
 
-  const lastUsedHtml = (state === "active" || state === "stale") && session
+  const lastUsedHtml = (state === "active" || state === "stale" || state === "active-reauth") && session
     ? `<span class="tbl__uptime">up ${sessionDuration(session.launchedAt)}</span>`
     : esc(a.lastUsed || "");
 
@@ -1419,9 +1467,9 @@ function render() {
   const allChecked = filtered.length > 0 && filtered.every((a) => selectedIds.has(a.id));
 
   const counts = {
-    active: accounts.filter((a) => rowState(a) === "active").length,
+    active: accounts.filter((a) => { const s = rowState(a); return s === "active" || s === "active-reauth"; }).length,
     stale: accounts.filter((a) => rowState(a) === "stale").length,
-    reauth: accounts.filter((a) => rowState(a) === "reauth").length,
+    reauth: accounts.filter((a) => { const s = rowState(a); return s === "reauth" || s === "active-reauth"; }).length,
     idle: accounts.filter((a) => rowState(a) === "idle").length,
   };
 
@@ -1546,6 +1594,7 @@ function render() {
       const acct = accounts.find((a) => a.id === id);
       if (!acct) return;
       if (btn.dataset.rowAction === "launch") launchCustomer(acct);
+      if (btn.dataset.rowAction === "launch-agent") { e.stopPropagation(); showAgentPickerDropdown(btn, [acct], e); }
       if (btn.dataset.rowAction === "switch") {
         const sess = activeSessions.find((s) => s.accountId === acct.id);
         if (sess?.desktopName) {
@@ -1554,7 +1603,7 @@ function render() {
       }
       if (btn.dataset.rowAction === "copy") copyInstruction(acct);
       if (btn.dataset.rowAction === "favorite") toggleFavorite(id);
-      if (btn.dataset.rowAction === "reauth") startLogin(acct.serverKey);
+      if (btn.dataset.rowAction === "reauth") startLogin(acct.serverKey, acct.id);
       if (btn.dataset.rowAction === "more") { e.stopPropagation(); showMoreActionsMenu(btn, acct, e); }
       if (btn.dataset.rowAction === "close-session") {
         const sess = activeSessions.find((s) => s.sessionId === btn.dataset.sessionId);
@@ -2046,6 +2095,7 @@ let cliInstallOutput = "";
 function renderCliTools(main) {
   const drFound = healthChecks?.dr?.found;
   const installing = !!cliInstallES;
+  const versionHint = installing ? "Updating…" : (drFound ? "Checking version…" : "Not installed");
   main.innerHTML = `
     <div class="page-header">
       <div class="page-header__breadcrumb st-mono">tools / dr cli</div>
@@ -2059,7 +2109,7 @@ function renderCliTools(main) {
         <div class="cli-tools-card__head">
           <div>
             <div class="cli-tools-card__title">Install / Update</div>
-            <div class="cli-tools-card__hint" id="cli-version-info">${drFound ? "Checking version…" : "Not installed"}</div>
+            <div class="cli-tools-card__hint" id="cli-version-info">${versionHint}</div>
           </div>
           <button class="st-btn st-btn--primary" id="cli-install-btn"${installing ? " disabled" : ""}>
             ${installing ? "Installing…" : (drFound ? ICON.refresh + " Update DR CLI" : ICON.plus + " Install DR CLI")}
@@ -2089,8 +2139,10 @@ function renderCliTools(main) {
 
   wireCliTools(main);
 
-  if (drFound) {
+  // Skip version check while installing — dr --version will fail with the package locked
+  if (!installing && drFound) {
     fetch("/api/cli/version", { headers }).then(r => r.json()).then(data => {
+      if (data.installing) return; // server-side install in progress
       const el = document.getElementById("cli-version-info");
       if (el && data.installed) el.textContent = "Installed: " + data.version;
       else if (el) { el.textContent = "Not installed"; el.style.color = "var(--st-state-failed-fg)"; }
@@ -2157,6 +2209,18 @@ function wireCliTools(main) {
         es.close();
         if (cliInstallES === es) cliInstallES = null;
         showToast("DR CLI install failed.", "error");
+        recheckHealth().then(() => {
+          const verEl = document.getElementById("cli-version-info");
+          if (verEl && healthChecks?.dr?.found) {
+            fetch("/api/cli/version", { headers }).then(r => r.json()).then(d => {
+              if (d.installed) verEl.textContent = "Installed: " + d.version;
+              else { verEl.textContent = "Not installed"; verEl.style.color = "var(--st-state-failed-fg)"; }
+            }).catch(() => {});
+          } else if (verEl) {
+            verEl.textContent = "Not installed";
+            verEl.style.color = "var(--st-state-failed-fg)";
+          }
+        });
       }
     };
     es.onerror = () => {
@@ -2519,6 +2583,98 @@ function showSettingsModal() {
   wireModalClose(overlay);
 }
 
+function showAgentPickerDropdown(anchorEl, accountsList, evt) {
+  if (!agentCatalog.length) return;
+  if (agentCatalog.length === 1) {
+    showAgentLaunchModal(accountsList, agentCatalog[0].id);
+    return;
+  }
+  const items = agentCatalog.map((a) => ({
+    label: a.name,
+    action() { showAgentLaunchModal(accountsList, a.id); },
+  }));
+  showDropdown(anchorEl, items, evt);
+}
+
+function showAgentLaunchModal(accountsList, agentId) {
+  if (!agentCatalog.length) return;
+  const selectedAgentId = agentId || agentCatalog[0].id;
+  const agent = agentCatalog.find((a) => a.id === selectedAgentId) || agentCatalog[0];
+  const isBatch = accountsList.length > 1;
+
+  function renderInputs(ag) {
+    return (ag.inputs || []).map((inp) => {
+      if (inp.type === "select") {
+        const opts = (inp.options || []).map((o) => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
+        return `<div class="agent-form__group">
+          <label class="agent-form__label">${esc(inp.label)}${inp.required ? " *" : ""}</label>
+          <select class="agent-form__select" data-agent-input="${esc(inp.key)}">${opts}</select>
+        </div>`;
+      }
+      if (inp.type === "textarea") {
+        return `<div class="agent-form__group">
+          <label class="agent-form__label">${esc(inp.label)}${inp.required ? " *" : ""}</label>
+          <textarea class="agent-form__textarea" data-agent-input="${esc(inp.key)}" placeholder="${esc(inp.placeholder || "")}"></textarea>
+        </div>`;
+      }
+      return `<div class="agent-form__group">
+        <label class="agent-form__label">${esc(inp.label)}${inp.required ? " *" : ""}</label>
+        <input type="text" class="agent-form__input" data-agent-input="${esc(inp.key)}" placeholder="${esc(inp.placeholder || "")}" />
+      </div>`;
+    }).join("");
+  }
+
+  const targetLabel = isBatch
+    ? `${accountsList.length} customers`
+    : esc(accountsList[0].orgDomain);
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="modal__head">
+        <div>
+          <h2>${ICON.zap} ${esc(agent.name)}</h2>
+          <p>${esc(agent.description)} · ${targetLabel}</p>
+        </div>
+        <button class="modal__close" aria-label="Close">${ICON.x}</button>
+      </div>
+      <div class="modal__body">
+        <div class="agent-form">
+          <div id="agent-inputs">${renderInputs(agent)}</div>
+        </div>
+      </div>
+      <div class="modal__foot">
+        <span class="agent-form__footer-hint">${isBatch ? "Agent will be scaffolded in each customer workspace" : ""}</span>
+        <button class="st-btn st-btn--primary" id="agent-launch-btn">${ICON.rocket} ${isBatch ? "Launch All" : "Launch"}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector("#agent-launch-btn").addEventListener("click", async () => {
+    const agentInputs = {};
+    overlay.querySelectorAll("[data-agent-input]").forEach((el) => {
+      agentInputs[el.dataset.agentInput] = el.value;
+    });
+
+    const missing = (agent.inputs || []).filter((inp) => inp.required && !agentInputs[inp.key]?.trim());
+    if (missing.length) {
+      showToast(`Missing required fields: ${missing.map((m) => m.label).join(", ")}`, "warn");
+      return;
+    }
+
+    closeModal();
+
+    if (isBatch) {
+      await launchBatchQueue({ agentId: selectedAgentId, agentInputs });
+    } else {
+      await launchCustomer(accountsList[0], { agentId: selectedAgentId, agentInputs });
+    }
+  });
+
+  wireModalClose(overlay);
+}
+
 function wireModalClose(overlay) {
   overlay.querySelector(".modal__close")?.addEventListener("click", closeModal);
   overlay.querySelectorAll("[data-modal-close]").forEach((b) => b.addEventListener("click", closeModal));
@@ -2614,7 +2770,7 @@ async function initApp() {
   renderTopbar();
   initKeyboardShortcuts();
 
-  await Promise.all([fetchServers(), fetchSettings(), fetchHealth(), fetchRecents(), fetchSessions()]);
+  await Promise.all([fetchServers(), fetchSettings(), fetchHealth(), fetchRecents(), fetchSessions(), fetchAgents()]);
 
   favoriteIds = new Set(userSettings.favoriteIds || []);
   collapsedServers = new Set(userSettings.collapsedServers || []);
@@ -2622,9 +2778,30 @@ async function initApp() {
 
   await fetchAccounts();
 
+  // Seed expired tracking from initial fetch (no toast on startup)
+  _prevExpiredIds = new Set(
+    accounts.filter((a) => { const s = rowState(a); return s === "reauth" || s === "active-reauth"; }).map((a) => a.id)
+  );
+
   setInterval(async () => {
     await checkSessionHealth();
     await fetchAccounts();
+
+    const currentExpired = new Set(
+      accounts.filter((a) => { const s = rowState(a); return s === "reauth" || s === "active-reauth"; }).map((a) => a.id)
+    );
+    if (_prevExpiredIds) {
+      const newlyExpired = [...currentExpired].filter((id) => !_prevExpiredIds.has(id));
+      if (newlyExpired.length > 0) {
+        const domains = newlyExpired.map((id) => accounts.find((a) => a.id === id)?.orgDomain).filter(Boolean);
+        if (domains.length === 1) {
+          showToast(`Auth expired for ${domains[0]}. Re-authenticate to continue.`, "warn");
+        } else if (domains.length > 1) {
+          showToast(`Auth expired for ${domains.length} accounts. Re-authenticate to continue.`, "warn");
+        }
+      }
+    }
+    _prevExpiredIds = currentExpired;
   }, 30000);
 
   const validIds = new Set(accounts.map((a) => a.id));

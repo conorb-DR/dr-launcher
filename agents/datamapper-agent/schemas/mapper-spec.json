@@ -1,0 +1,92 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Datarails Datamapper Spec",
+  "description": "Exact JSON body sent to /api/templates/mappers (POST) or /api/templates/mappers/<id> (PUT)",
+  "type": "object",
+  "required": ["name", "document_version_id", "selected_document_ids", "config", "sheet_name"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Mapper display name"
+    },
+    "document_version_id": {
+      "type": ["string", "number"],
+      "description": "From `dr filebox get <doc_id>` — the top-level `id` IS the version_id, not the doc_id"
+    },
+    "selected_document_ids": {
+      "type": "array",
+      "items": { "type": ["string", "number"] },
+      "minItems": 1
+    },
+    "sheet_name": {
+      "type": "string"
+    },
+    "config": {
+      "type": "object",
+      "required": ["header"],
+      "properties": {
+        "header": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["coordinate", "value", "map_to", "match_type"],
+            "properties": {
+              "coordinate": { "type": "string", "pattern": "^[A-Z]+[0-9]+$" },
+              "value": { "type": "string" },
+              "map_to": { "type": "string" },
+              "match_type": { "type": "string", "enum": ["value", "regex"] },
+              "groups": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["coordinate", "value"],
+                  "properties": {
+                    "coordinate": { "type": "string" },
+                    "value": { "type": "string" },
+                    "items": { "type": "array" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "dimension": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["coordinate", "value", "map_to", "match_type"],
+            "properties": {
+              "coordinate": { "type": "string" },
+              "value": { "type": "string" },
+              "match_type": { "type": "string", "enum": ["value", "regex"] },
+              "map_to": {
+                "type": "string",
+                "description": "MUST point to a text field — never a Date field (Bug 3 — silent null coercion)"
+              },
+              "repetitive_structure": { "type": "boolean" },
+              "groups": { "type": "array" }
+            }
+          }
+        },
+        "calculated_fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "formula"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "MUST NOT collide with any header[].map_to in the same config (Bug 4 — tenant-wide ETL crash)"
+              },
+              "formula": {
+                "type": "string",
+                "description": "PascalCase functions only, == for equality, single-arg EOMONTH, no prose literals, no quote-char string literals on US2 (Bug 6)"
+              }
+            }
+          }
+        },
+        "ignore_zeros": { "type": "boolean" }
+      }
+    }
+  }
+}

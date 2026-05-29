@@ -20,6 +20,7 @@ const servers = require("./lib/servers");
 const logger = require("./lib/log");
 const artifacts = require("./lib/artifacts");
 const cleanup = require("./lib/cleanup");
+const authHealth = require("./lib/auth-health");
 
 const PID_DIR = path.join(
   process.env.LOCALAPPDATA || path.join(require("os").homedir(), "AppData", "Local"),
@@ -270,8 +271,12 @@ app.get("/api/health", requireToken, async (req, res) => {
     vdCheck = { ok: false, error: "check_timed_out" };
   }
 
+  // During install, don't re-probe dr — npm has the package locked, `where dr` may fail
+  const drFound = cliInstallChild
+    ? (healthChecksCache?.dr?.found ?? drCli.hasDrCli())
+    : drCli.hasDrCli();
   const checks = {
-      dr: { found: drCli.hasDrCli() },
+      dr: { found: drFound, installing: !!cliInstallChild },
       chrome: { found: chromeInfo.available, path: chromeInfo.path },
       claude: { found: workspace.hasClaudeCli() },
       windowsTerminal: { found: workspace.hasWindowsTerminal() },
@@ -299,18 +304,42 @@ app.get("/api/health", requireToken, async (req, res) => {
 
 // DR CLI version check
 app.get("/api/cli/version", requireToken, (req, res) => {
+  if (cliInstallChild) {
+    return res.json({ installed: null, version: null, installing: true });
+  }
   const version = drCli.getDrVersion();
   res.json({ installed: !!version, version });
 });
 
 // DR CLI install/update — streams output via SSE
+let cliInstallChild = null;
+const CLI_INSTALL_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+
 app.get("/api/cli/install", requireToken, (req, res) => {
+  if (cliInstallChild) {
+    res.writeHead(409, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Install already in progress" }));
+    return;
+  }
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
   });
-  const send = (type, data) => res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
+  let closed = false;
+  const send = (type, data) => {
+    if (closed) return;
+    try { res.write(`data: ${JSON.stringify({ type, data })}\n\n`); } catch { closed = true; }
+  };
+  const finish = () => {
+    closed = true;
+    cliInstallChild = null;
+    clearTimeout(installTimer);
+    drCli.resetDrCache();
+    setTimeout(() => { try { res.end(); } catch {} }, 500);
+  };
+
   send("status", "Starting DR CLI install/update…");
 
   const npmCmd = "npm install -g dr-cli --registry https://datarails.jfrog.io/artifactory/api/npm/dr-cli-client-virtual";
@@ -318,24 +347,31 @@ app.get("/api/cli/install", requireToken, (req, res) => {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
+  cliInstallChild = child;
+
+  const installTimer = setTimeout(() => {
+    logger.log("error", "cli", "DR CLI install timed out after 3 minutes");
+    send("error", "Install timed out after 3 minutes. Check your network connection to JFrog and retry.");
+    try { child.kill(); } catch {}
+    finish();
+  }, CLI_INSTALL_TIMEOUT_MS);
 
   child.stdout.on("data", (chunk) => send("stdout", chunk.toString()));
   child.stderr.on("data", (chunk) => send("stderr", chunk.toString()));
   child.on("close", (code) => {
     if (code === 0) {
-      drCli.resetDrCache();
       send("done", "DR CLI installed/updated successfully.");
       logger.log("info", "cli", "DR CLI install/update completed");
     } else {
       send("error", `Install exited with code ${code}. This can happen if dr-cli is currently running — close any terminals using it and retry.`);
       logger.log("error", "cli", `DR CLI install failed with exit code ${code}`);
     }
-    setTimeout(() => { try { res.end(); } catch {} }, 500);
+    finish();
   });
   child.on("error", (err) => {
     send("error", `Failed to start install: ${err.message}`);
     logger.log("error", "cli", `DR CLI install spawn error: ${err.message}`);
-    setTimeout(() => { try { res.end(); } catch {} }, 500);
+    finish();
   });
 
   req.on("close", () => {
@@ -411,7 +447,8 @@ app.post("/api/settings", requireToken, (req, res) => {
 app.get("/api/accounts", requireToken, async (req, res) => {
   try {
     if (req.query.force === "1") drCli.invalidateAccountsCache();
-    const accounts = await drCli.discoverAccounts();
+    const discovered = await drCli.discoverAccounts();
+    const accounts = authHealth.mergeWithDiscovered(discovered);
     res.json({ accounts });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -481,6 +518,14 @@ app.get("/api/sync/status", requireToken, (req, res) => {
 });
 
 // Sessions
+app.get("/api/agents", requireToken, (req, res) => {
+  try {
+    res.json({ agents: require("./lib/agents").loadCatalog() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/sessions", requireToken, (req, res) => {
   sessions.pruneEndedSessions();
   res.json({ sessions: sessions.getVisibleSessions() });
@@ -530,6 +575,15 @@ app.get("/api/sessions/health", requireToken, async (req, res) => {
   }
 });
 
+app.post("/api/auth-health/check", requireToken, async (req, res) => {
+  try {
+    await authHealth.runCheck();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Live launch progress — SSE stream (uses query-string token since EventSource can't send headers)
 app.get("/api/launch-stream", (req, res) => {
   const token = req.query.token || req.headers["x-dr-launcher-token"];
@@ -547,7 +601,7 @@ app.get("/api/launch-stream", (req, res) => {
 
 // Launch: Chrome + workspace + terminal + optional virtual desktop
 app.post("/api/launch", requireToken, async (req, res) => {
-  const { id, email, serverKey, serverHost, orgDomain, orgId, noSwitch } = req.body;
+  const { id, email, serverKey, serverHost, orgDomain, orgId, noSwitch, agentId, agentInputs } = req.body;
   if (!email || !serverKey || !orgDomain) {
     return res.status(400).json({ error: "Missing required fields" });
   }
@@ -563,6 +617,17 @@ app.post("/api/launch", requireToken, async (req, res) => {
   }
   if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/i.test(orgDomain)) {
     return res.status(400).json({ error: "Invalid orgDomain format" });
+  }
+
+  // Validate agent request before acquiring lock (fail-fast)
+  let validatedAgent = null;
+  if (agentId) {
+    const agentsLib = require("./lib/agents");
+    const validation = agentsLib.validateAgentRequest(agentId, agentInputs || {});
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.error });
+    }
+    validatedAgent = validation.agent;
   }
 
   // Block duplicate active sessions
@@ -616,6 +681,27 @@ app.post("/api/launch", requireToken, async (req, res) => {
     }
     logger.log("info", "launch", `Workspace: ${result.workspace.ok ? "ok" : "failed"}`, { launchId });
 
+    // 1b. Agent scaffolding (if agent requested)
+    if (result.workspace.ok) {
+      const agentsLib = require("./lib/agents");
+      agentsLib.clearAgentScaffold(result.workspace.path);
+
+      if (validatedAgent) {
+        try {
+          const scaffoldResult = agentsLib.scaffoldAgent(agentId, result.workspace.path, agentInputs || {});
+          result.agent = { ok: true, ...scaffoldResult };
+        } catch (err) {
+          logger.log("error", "launch", `Agent scaffold failed: ${err.message}`, { launchId, agentId });
+          virtualDesktop.releaseLaunchLock();
+          return res.status(500).json({
+            error: `Agent setup failed: ${err.message}`,
+            agentId,
+            workspace: result.workspace,
+          });
+        }
+      }
+    }
+
     // 2. Snapshot windows BEFORE launching (if VD enabled)
     emit(2, "Snapshotting windows");
     let snapshot = null;
@@ -641,10 +727,19 @@ app.post("/api/launch", requireToken, async (req, res) => {
     emit(4, "Opening Claude Code");
     if (result.workspace.ok) {
       try {
-        const termResult = workspace.launchTerminal(result.workspace.path, {
+        const termOpts = {
           titlePrefix: terminalTitle,
           titleHoldSeconds: useVD && snapshot?.ok ? TERMINAL_TITLE_HOLD_SECONDS : 0,
-        });
+        };
+        if (validatedAgent) {
+          // Prefer the token-expanded initialPrompt produced by scaffoldAgent;
+          // fall back to the raw manifest value, then a generic default.
+          termOpts.initialPrompt =
+            result.agent?.initialPrompt ||
+            validatedAgent.initialPrompt ||
+            `Read AGENT_TASK.md and AGENT_INSTRUCTIONS.md, then invoke /${agentId} to begin.`;
+        }
+        const termResult = workspace.launchTerminal(result.workspace.path, termOpts);
         result.terminal = termResult;
       } catch (err) {
         result.terminal = { ok: false, error: err.message };
@@ -707,6 +802,8 @@ app.post("/api/launch", requireToken, async (req, res) => {
         launchedAt: new Date().toISOString(),
         chromeOk: result.chrome.ok === true,
         terminalOk: result.terminal.ok === true,
+        agentId: agentId || null,
+        agentName: validatedAgent?.name || null,
       });
       if (!regResult.ok) {
         logger.log("error", "session", `Registration failed for ${orgDomain}: ${regResult.error}`);
@@ -721,6 +818,7 @@ app.post("/api/launch", requireToken, async (req, res) => {
         serverKey,
         email,
         launchedAt: new Date().toISOString(),
+        ...(agentId ? { agentId } : {}),
       };
       history.addEntry(historyEntry);
       sync.pushHistoryEntry(historyEntry);
@@ -758,7 +856,7 @@ app.post("/api/switch-desktop", requireToken, async (req, res) => {
 // Start a dr login flow
 app.post("/api/login", requireToken, (req, res) => {
   try {
-    const { server } = req.body;
+    const { server, accountId, email } = req.body;
     const key = drCli.validateServer(server);
     const child = drCli.startLogin(key);
 
@@ -769,6 +867,8 @@ app.post("/api/login", requireToken, (req, res) => {
     res.json({
       started: true,
       server: key,
+      accountId: accountId || null,
+      email: email || null,
       message: `Browser should open for ${key} authentication. Complete the login in your browser.`,
     });
   } catch (err) {
@@ -834,6 +934,8 @@ function tryListen(port, maxAttempts) {
       logger.log("info", "server", `Cleared ${stale.cleared} stale session(s) from previous run`);
     }
 
+    authHealth.start();
+
     // Pre-check virtual desktop availability
     const vdStatus = await virtualDesktop.checkAvailability();
     logger.log("info", "server", `Virtual desktops: ${vdStatus.ok ? "available" : "unavailable"}${vdStatus.error ? ` (${vdStatus.error})` : ""}`);
@@ -841,6 +943,7 @@ function tryListen(port, maxAttempts) {
     // Graceful shutdown
     function shutdown(signal) {
       logger.log("info", "server", `${signal} received — shutting down`);
+      authHealth.stop();
       removePidFile();
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(0), 3000);

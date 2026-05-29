@@ -1,0 +1,54 @@
+{
+  "id": "dashboard-agent",
+  "name": "Dashboard Agent",
+  "description": "Build, audit, and repair Datarails dashboards",
+  "version": "1.0.0",
+  "sourceType": "relative",
+  "source": ".",
+  "copyDirs": {
+    "scripts": ".agent/scripts",
+    "reference": ".agent/reference",
+    "schemas": ".agent/schemas"
+  },
+  "createDirs": [".agent/specs", ".agent/tmp"],
+  "skills": "skills",
+  "skillDescriptions": {
+    "dashboard-agent": "Entry point — invoke when asked to build, audit, edit, or fix dashboards",
+    "dashboard-plan": "Discovers templates, builds visual layout plan. Called by dashboard-agent.",
+    "dashboard-build": "Executes an approved spec. Called after user approves plan.",
+    "dashboard-audit": "Verifies dashboard health via CLI and browser. Called after build.",
+    "dashboard-repair": "Fixes broken widgets. Called when audit finds issues.",
+    "dashboard-edit": "Surgical changes to existing dashboards.",
+    "dashboard-interpret": "Extracts dashboard structure from screenshots/Excel/artifacts."
+  },
+  "agentInstructions": "CLAUDE.md",
+  "hooks": {
+    "configFile": "hooks/settings.json",
+    "scripts": ["hooks/run-grid-engine.ps1"]
+  },
+  "initialPrompt": "Read AGENT_TASK.md and AGENT_INSTRUCTIONS.md, then invoke /dashboard-agent to begin.",
+  "promptTemplate": "prompt.md",
+  "inputs": [
+    {
+      "key": "task",
+      "label": "What do you need?",
+      "type": "select",
+      "options": ["Build a new dashboard", "Audit an existing dashboard", "Edit or repair a dashboard"],
+      "required": true
+    },
+    {
+      "key": "dashboardName",
+      "label": "Dashboard name",
+      "type": "text",
+      "placeholder": "e.g. Executive Summary",
+      "required": false
+    },
+    {
+      "key": "context",
+      "label": "Additional context",
+      "type": "textarea",
+      "placeholder": "Paste requirements, example layouts, or any notes...",
+      "required": false
+    }
+  ]
+}

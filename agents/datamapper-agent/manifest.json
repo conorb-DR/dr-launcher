@@ -1,0 +1,80 @@
+{
+  "id": "datamapper-agent",
+  "name": "Datamapper Agent",
+  "description": "Create or edit Datarails datamappers",
+  "version": "1.0.0",
+  "sourceType": "relative",
+  "source": ".",
+  "copyDirs": {
+    "scripts": ".agent/scripts",
+    "reference": ".agent/reference",
+    "schemas": ".agent/schemas"
+  },
+  "createDirs": [".agent/specs", ".agent/tmp", ".agent/downloads"],
+  "skills": "skills",
+  "skillDescriptions": {
+    "datamapper-agent": "Entry point — invoke when asked to create or edit a datamapper",
+    "datamapper-plan": "Discovers inputs, builds the mapper-spec.json, runs pre-flight validation, presents the plan for approval. Called by datamapper-agent.",
+    "datamapper-build": "Executes an approved spec end-to-end (create/update/create-then-delete-old, bind, rescan). Called by datamapper-plan after user approval.",
+    "datamapper-verify": "Confirms the build landed correctly — scan status, sample rows, aggregations, null checks. Called automatically by datamapper-build."
+  },
+  "agentInstructions": "CLAUDE.md",
+  "hooks": {
+    "configFile": "hooks/settings.json",
+    "scripts": ["hooks/validate-mapper-spec.ps1"]
+  },
+  "initialPrompt": "Read AGENT_TASK.md and AGENT_INSTRUCTIONS.md, then invoke /datamapper-agent to begin.",
+  "promptTemplate": "prompt.md",
+  "inputs": [
+    {
+      "key": "task",
+      "label": "What do you need?",
+      "type": "select",
+      "options": [
+        "Create a new datamapper",
+        "Edit an existing datamapper"
+      ],
+      "required": true
+    },
+    {
+      "key": "mapperType",
+      "label": "Mapper type (for new mappers)",
+      "type": "select",
+      "options": [
+        "Flat GL (one row per transaction)",
+        "Pivoted Trial Balance (months as columns)",
+        "QBO-style import",
+        "Other / not sure"
+      ],
+      "required": false
+    },
+    {
+      "key": "tableId",
+      "label": "Target table id or name",
+      "type": "text",
+      "placeholder": "e.g. 5316 or trial_balance",
+      "required": false
+    },
+    {
+      "key": "mapperId",
+      "label": "Existing mapper id (for edits)",
+      "type": "text",
+      "placeholder": "e.g. 70999",
+      "required": false
+    },
+    {
+      "key": "sourceDocId",
+      "label": "Source filebox doc id",
+      "type": "text",
+      "placeholder": "e.g. 45383",
+      "required": false
+    },
+    {
+      "key": "context",
+      "label": "Additional context",
+      "type": "textarea",
+      "placeholder": "Source file structure, hardcoded fields (Entity, Data Type), specific change requested, etc.",
+      "required": false
+    }
+  ]
+}
