@@ -46,9 +46,11 @@ dr-launcher/
 ├── server.js              # Express server — main entry point
 ├── lib/
 │   ├── auth.js            # Authentication (Azure AD + dev mode)
+│   ├── auth-health.js     # Background dr-cli auth/JWT health checks
 │   ├── chrome.js          # Isolated Chrome profile launcher
 │   ├── workspace.js       # Customer workspace + CLAUDE.md generation
-│   ├── sessions.js        # Active session tracking
+│   ├── sessions.js        # Active session tracking (persists to sessions.json)
+│   ├── agents.js          # Bundled-agent scaffolding into a workspace
 │   ├── dr-cli.js          # DR CLI integration (account discovery)
 │   ├── virtual-desktop.js # Windows virtual desktop management
 │   ├── settings.js        # Local settings persistence
@@ -91,8 +93,10 @@ All runtime data is stored in `%LOCALAPPDATA%/DR Launcher/`:
 |------|---------|
 | `settings.json` | Local settings (virtual desktops toggle, etc.) |
 | `preferences.json` | User preferences |
-| `launch-history.json` | Launch history log |
-| `dr-launcher.log` | Application log |
+| `sessions.json` | Active/stale session registry (separate from settings) |
+| `history.json` | Launch history log |
+| `artifacts.json` | Per-customer workspace/profile artifact metadata |
+| `logs/launcher.log` | Application log (rotated: `launcher.1.log`, …) |
 | `auth-cache.json` | Azure AD token cache (only when SSO is configured) |
 | `dev-session.json` | Dev mode session (only when using dev login) |
 | `ChromeProfiles/` | Isolated Chrome user data directories per customer |
@@ -109,6 +113,16 @@ For production SSO, create `auth-config.json` in the project root:
 ```
 
 This file is gitignored and will never be committed.
+
+For **packaged builds**, prod SSO config is sourced from
+`packaging/auth-config.prod.json` (also gitignored). When present, the build
+pipeline copies it into `dist/app/auth-config.json`; when absent, the build
+ships no auth-config and the app falls back to dev-login.
+
+> **Note:** the MSAL OAuth redirect intentionally uses `http://localhost:<port>/auth/callback`
+> even though the app itself serves on `127.0.0.1`. Azure AD treats `localhost`
+> as a special loopback redirect; aligning the two would require an Azure app
+> registration change and is tracked separately.
 
 ## Building the installer
 
@@ -128,7 +142,7 @@ Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php) installed. The build 
 
 **Chrome won't launch:** Verify Chrome is installed, or set `CHROME_PATH` to your Chrome executable.
 
-**Logs:** Check `%LOCALAPPDATA%/DR Launcher/dr-launcher.log` for detailed error output.
+**Logs:** Check `%LOCALAPPDATA%/DR Launcher/logs/launcher.log` for detailed error output.
 
 ## License
 
