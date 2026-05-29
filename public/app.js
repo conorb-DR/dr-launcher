@@ -2,11 +2,10 @@
 // DR Launcher · app.js (Studio design system)
 // ───────────────────────────────────────────────────────────────
 
-const API_TOKEN = (typeof window !== "undefined") ? window.__DR_TOKEN__ : null;
-
+// Auth is an HttpOnly, SameSite=Strict cookie the server sets on `/`. Same-origin
+// fetch + EventSource send it automatically, so the page never handles the token.
 const headers = {
   "Content-Type": "application/json",
-  "X-DR-Launcher-Token": API_TOKEN,
 };
 
 // ── State ─────────────────────────────────────────────────────────
@@ -606,7 +605,7 @@ function toggleCollapse(serverKey) {
 
 function connectLaunchSSE() {
   if (launchSSE) return;
-  launchSSE = new EventSource(`/api/launch-stream?token=${encodeURIComponent(API_TOKEN)}`);
+  launchSSE = new EventSource("/api/launch-stream");
   launchSSE.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
@@ -2208,7 +2207,7 @@ function wireCliTools(main) {
 
     if (cliInstallES) { try { cliInstallES.close(); } catch {} }
     let cliInstallDone = false;
-    const es = new EventSource(`/api/cli/install?token=${encodeURIComponent(API_TOKEN)}`);
+    const es = new EventSource("/api/cli/install");
     cliInstallES = es;
     es.onmessage = (e) => {
       const out = document.getElementById("cli-install-output");
@@ -2283,7 +2282,7 @@ function runCliInstall(statusEl, btn) {
   btn.textContent = "Installing…";
   statusEl.textContent = "Starting…";
   statusEl.style.color = "var(--st-ink-muted)";
-  const es = new EventSource(`/api/cli/install?token=${encodeURIComponent(API_TOKEN)}`);
+  const es = new EventSource("/api/cli/install");
   let output = "";
   es.onmessage = (e) => {
     const msg = JSON.parse(e.data);
@@ -2436,7 +2435,7 @@ function showSettingsModal() {
               <div class="settings-row">
                 <div class="settings-row__main" style="font-size:12px;color:var(--st-ink-muted);line-height:1.6">
                   <div>DR Launcher — local-first customer launcher</div>
-                  <div>API token: <code style="font-family:'JetBrains Mono',monospace;color:var(--st-ink)">${esc(String(API_TOKEN).slice(0, 6))}…${esc(String(API_TOKEN).slice(-4))}</code></div>
+                  <div>Auth: HttpOnly session cookie (token not exposed to the page)</div>
                 </div>
                 <button class="st-btn st-btn--sm" id="settings-copy-diag">Copy diagnostics</button>
               </div>

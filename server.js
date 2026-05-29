@@ -8,6 +8,7 @@ const drCli = require("./lib/dr-cli");
 const chrome = require("./lib/chrome");
 const workspace = require("./lib/workspace");
 const slug = require("./lib/slug");
+const cookie = require("./lib/cookie");
 const virtualDesktop = require("./lib/virtual-desktop");
 const settings = require("./lib/settings");
 const sessions = require("./lib/sessions");
@@ -138,8 +139,10 @@ const API_TOKEN = crypto.randomBytes(24).toString("hex");
 let healthChecksCache = null;
 
 function requireToken(req, res, next) {
-  const token = req.headers["x-dr-launcher-token"] || req.query.token;
-  if (token !== API_TOKEN) {
+  // Token comes from the HttpOnly cookie set on `/` — NOT the query string or a
+  // JS-set header. That closes the page-source leak and the SSE query-token path.
+  // SameSite=Strict on the cookie + the Origin allowlist block cross-site calls.
+  if (cookie.readApiToken(req) !== API_TOKEN) {
     return res.status(403).json({ error: "Invalid or missing API token" });
   }
   const origin = req.headers["origin"];
@@ -180,11 +183,13 @@ app.get("/", async (req, res) => {
     }
   } catch { /* unauthenticated — leave blank */ }
 
-  html = html.replace("__API_TOKEN__", API_TOKEN);
   html = html.replace("__THEME__", userTheme);
   html = html.replace("__USER_NAME__", userName);
   html = html.replace("__USER_INITIALS__", userInitials);
-  // The page embeds the per-run API token — never let a proxy/browser cache it.
+  // Deliver the per-run API token as an HttpOnly, SameSite=Strict, host-only
+  // cookie (no Domain; no Secure on local http://127.0.0.1). The page no longer
+  // embeds the token, and same-origin fetch/EventSource send the cookie for us.
+  res.cookie(cookie.TOKEN_COOKIE, API_TOKEN, { httpOnly: true, sameSite: "strict", path: "/" });
   res.set("Cache-Control", "no-store");
   res.type("html").send(html);
 });
@@ -605,10 +610,9 @@ app.post("/api/auth-health/check", requireToken, requireAuthenticated, async (re
   }
 });
 
-// Live launch progress — SSE stream (uses query-string token since EventSource can't send headers)
-app.get("/api/launch-stream", (req, res) => {
-  const token = req.query.token || req.headers["x-dr-launcher-token"];
-  if (token !== API_TOKEN) return res.status(403).json({ error: "Invalid token" });
+// Live launch progress — SSE stream. Same-origin EventSource sends the auth
+// cookie automatically, so it's gated by requireToken like every other route.
+app.get("/api/launch-stream", requireToken, (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
