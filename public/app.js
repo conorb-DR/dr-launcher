@@ -16,6 +16,7 @@ let userSettings = { useVirtualDesktops: false };
 let vdAvailable = null;
 let launchInProgress = false;
 let activeLaunch = null;
+let launchingAccountId = null; // id of the account currently launching (row-level "launching" badge keys off this, not orgDomain)
 let recentLaunches = [];
 let filterServer = null;
 let selectedIds = new Set();
@@ -69,7 +70,7 @@ function rowState(account) {
   const session = activeSessions.find((s) => s.accountId === account.id);
   const queued = selectedIds.has(account.id) && batchQueue;
   if (queued) return "queued";
-  if (launchInProgress && activeLaunch?.orgDomain === account.orgDomain) return "launching";
+  if (launchInProgress && launchingAccountId === account.id) return "launching";
   if (session) {
     if (session.status === "stale") return "stale";
     if (account.cliAuthStatus === "expired") return "active-reauth";
@@ -646,6 +647,7 @@ async function launchCustomer(account, opts = {}) {
     return { ok: false, account, error: "launch_in_progress" };
   }
   launchInProgress = true;
+  launchingAccountId = account.id;
   activeLaunch = { orgDomain: account.orgDomain, serverKey: account.serverKey, step: 1, totalSteps: 5, label: "Starting" };
   connectLaunchSSE();
   renderLaunchStrip();
@@ -768,6 +770,7 @@ async function launchCustomer(account, opts = {}) {
     return { ok: false, account, error: err.message };
   } finally {
     launchInProgress = false;
+    launchingAccountId = null;
     activeLaunch = null;
     disconnectLaunchSSE();
     renderLaunchStrip();
