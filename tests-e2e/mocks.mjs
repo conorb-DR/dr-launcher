@@ -82,6 +82,10 @@ export async function setupHarness(page, opts = {}) {
         case "/api/agents":      return json(route, { agents: [] });
         case "/api/diagnostics": return json(route, { text: "DR Launcher diagnostics — e2e stub" });
         case "/api/cli/version": return json(route, { installed: true, version: "1.2.3", installing: false });
+        case "/api/cleanup/scan": return json(route, {
+          profiles: [{ path: "C:\\Profiles\\acme-abc", slug: "acme-abc", sizeMB: 12.3, lastUsed: "2026-05-01T00:00:00.000Z" }],
+          workspaces: [{ path: "C:\\Workspaces\\acme-abc", slug: "acme-abc", sizeMB: 4.5, hasUserContent: false }],
+        });
         case "/api/accounts":    return json(route, computeAccounts(state));
         default: return json(route, {});
       }
@@ -115,6 +119,14 @@ export async function setupHarness(page, opts = {}) {
         });
       }
       return json(route, launchSuccessBody());
+    }
+
+    if (pathname === "/api/cleanup/purge" && method === "POST") {
+      const body = req.postDataJSON() || {};
+      return json(route, {
+        profiles: { deleted: body.profiles || [] },
+        workspaces: { quarantined: body.workspaces || [] },
+      });
     }
 
     return json(route, {});
