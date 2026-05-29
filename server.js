@@ -2,7 +2,7 @@ const express = require("express");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { exec, spawn } = require("child_process");
+const { exec, execFile, spawn } = require("child_process");
 
 const drCli = require("./lib/dr-cli");
 const chrome = require("./lib/chrome");
@@ -21,6 +21,8 @@ const logger = require("./lib/log");
 const artifacts = require("./lib/artifacts");
 const cleanup = require("./lib/cleanup");
 const authHealth = require("./lib/auth-health");
+const launchIdentity = require("./lib/launch-identity");
+const { isInsideRoot } = require("./lib/path-safety");
 
 const PID_DIR = path.join(
   process.env.LOCALAPPDATA || path.join(require("os").homedir(), "AppData", "Local"),
@@ -58,21 +60,23 @@ function isOurProcess(pid) {
   }
 }
 
+// Returns true if a previous server was actually signalled to die (so the
+// caller can asynchronously await port release instead of busy-spinning).
 function killPreviousServer() {
   const info = parsePidFile();
-  if (!info || !info.pid || info.pid === process.pid) return;
+  if (!info || !info.pid || info.pid === process.pid) return false;
   try {
     process.kill(info.pid, 0);
     if (!isOurProcess(info.pid)) {
       logger.log("warn", "server", `PID ${info.pid} is alive but not a DR Launcher process — skipping kill`);
-      return;
+      return false;
     }
     process.kill(info.pid, "SIGTERM");
     logger.log("info", "server", `Killed previous server (PID ${info.pid})`);
-    const start = Date.now();
-    while (Date.now() - start < 1000) { /* spin for port release */ }
+    return true;
   } catch {
     // Process already dead
+    return false;
   }
 }
 
@@ -144,6 +148,20 @@ function requireToken(req, res, next) {
   next();
 }
 
+// Gate mutating routes behind a valid auth session (dev session satisfies it).
+// Applied AFTER requireToken — token proves "this is our UI", auth proves
+// "a signed-in user".
+async function requireAuthenticated(req, res, next) {
+  try {
+    if (!auth.isUserAuthorized(await auth.getCurrentUser())) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+  } catch {
+    return res.status(401).json({ error: "Not authenticated" });
+  }
+  next();
+}
+
 // Serve static frontend — inject token + user info into index.html
 app.get("/", async (req, res) => {
   const fs = require("fs");
@@ -165,6 +183,8 @@ app.get("/", async (req, res) => {
   html = html.replace("__THEME__", userTheme);
   html = html.replace("__USER_NAME__", userName);
   html = html.replace("__USER_INITIALS__", userInitials);
+  // The page embeds the per-run API token — never let a proxy/browser cache it.
+  res.set("Cache-Control", "no-store");
   res.type("html").send(html);
 });
 
@@ -315,7 +335,7 @@ app.get("/api/cli/version", requireToken, (req, res) => {
 let cliInstallChild = null;
 const CLI_INSTALL_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
 
-app.get("/api/cli/install", requireToken, (req, res) => {
+app.get("/api/cli/install", requireToken, requireAuthenticated, (req, res) => {
   if (cliInstallChild) {
     res.writeHead(409, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Install already in progress" }));
@@ -406,7 +426,7 @@ app.get("/api/cleanup/scan", requireToken, (req, res) => {
   }
 });
 
-app.post("/api/cleanup/purge", requireToken, (req, res) => {
+app.post("/api/cleanup/purge", requireToken, requireAuthenticated, (req, res) => {
   try {
     const { profiles = [], workspaces = [] } = req.body;
     const result = {};
@@ -432,7 +452,7 @@ app.get("/api/settings", requireToken, (req, res) => {
   res.json(settings.getSettingsWithPreferences());
 });
 
-app.post("/api/settings", requireToken, (req, res) => {
+app.post("/api/settings", requireToken, requireAuthenticated, (req, res) => {
   try {
     const updated = settings.updateSettings(req.body);
     const hasPrefKeys = Object.keys(req.body).some((k) => preferences.SYNCABLE_KEYS.includes(k));
@@ -456,7 +476,7 @@ app.get("/api/accounts", requireToken, async (req, res) => {
 });
 
 // Refresh accounts for a specific server
-app.post("/api/refresh", requireToken, async (req, res) => {
+app.post("/api/refresh", requireToken, requireAuthenticated, async (req, res) => {
   try {
     const { server } = req.body;
     const key = drCli.validateServer(server);
@@ -473,7 +493,7 @@ app.get("/api/recents", requireToken, (req, res) => {
   res.json({ recents });
 });
 
-app.post("/api/recents", requireToken, (req, res) => {
+app.post("/api/recents", requireToken, requireAuthenticated, (req, res) => {
   const { recents } = req.body;
   if (!Array.isArray(recents)) return res.status(400).json({ error: "recents must be an array" });
   for (const entry of recents) {
@@ -492,7 +512,7 @@ app.post("/api/recents", requireToken, (req, res) => {
 });
 
 // Sync
-app.post("/api/sync/init", requireToken, async (req, res) => {
+app.post("/api/sync/init", requireToken, requireAuthenticated, async (req, res) => {
   try {
     const user = await auth.getCurrentUser();
     if (!user) return res.status(401).json({ error: "Not authenticated" });
@@ -504,7 +524,7 @@ app.post("/api/sync/init", requireToken, async (req, res) => {
   }
 });
 
-app.post("/api/sync", requireToken, async (req, res) => {
+app.post("/api/sync", requireToken, requireAuthenticated, async (req, res) => {
   try {
     const result = await sync.pullAndMerge();
     res.json(result);
@@ -531,7 +551,7 @@ app.get("/api/sessions", requireToken, (req, res) => {
   res.json({ sessions: sessions.getVisibleSessions() });
 });
 
-app.post("/api/sessions/close", requireToken, async (req, res) => {
+app.post("/api/sessions/close", requireToken, requireAuthenticated, async (req, res) => {
   const { sessionId } = req.body;
   if (!sessionId) return res.status(400).json({ error: "Missing sessionId" });
   try {
@@ -542,7 +562,7 @@ app.post("/api/sessions/close", requireToken, async (req, res) => {
   }
 });
 
-app.post("/api/sessions/force-close", requireToken, async (req, res) => {
+app.post("/api/sessions/force-close", requireToken, requireAuthenticated, async (req, res) => {
   const { sessionId } = req.body;
   if (!sessionId) return res.status(400).json({ error: "Missing sessionId" });
   try {
@@ -553,7 +573,7 @@ app.post("/api/sessions/force-close", requireToken, async (req, res) => {
   }
 });
 
-app.post("/api/sessions/close-batch", requireToken, async (req, res) => {
+app.post("/api/sessions/close-batch", requireToken, requireAuthenticated, async (req, res) => {
   const { sessionIds } = req.body;
   if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
     return res.status(400).json({ error: "sessionIds must be a non-empty array" });
@@ -575,7 +595,7 @@ app.get("/api/sessions/health", requireToken, async (req, res) => {
   }
 });
 
-app.post("/api/auth-health/check", requireToken, async (req, res) => {
+app.post("/api/auth-health/check", requireToken, requireAuthenticated, async (req, res) => {
   try {
     await authHealth.runCheck();
     res.json({ ok: true });
@@ -600,23 +620,28 @@ app.get("/api/launch-stream", (req, res) => {
 });
 
 // Launch: Chrome + workspace + terminal + optional virtual desktop
-app.post("/api/launch", requireToken, async (req, res) => {
-  const { id, email, serverKey, serverHost, orgDomain, orgId, noSwitch, agentId, agentInputs } = req.body;
+app.post("/api/launch", requireToken, requireAuthenticated, async (req, res) => {
+  const { email, serverKey, orgDomain, orgId, noSwitch, agentId, agentInputs } = req.body;
   if (!email || !serverKey || !orgDomain) {
     return res.status(400).json({ error: "Missing required fields" });
   }
+  if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/i.test(orgDomain)) {
+    return res.status(400).json({ error: "Invalid orgDomain format" });
+  }
 
+  // Resolve a trusted identity server-side. The client's serverHost is IGNORED;
+  // the canonical host (servers.serverHost) drives Chrome, CLAUDE.md, the
+  // duplicate-session check, history, and artifacts. Also validates the server
+  // key and email (throws -> 400).
+  let identity;
   try {
-    drCli.validateServer(serverKey);
+    identity = launchIdentity.resolveLaunchIdentity({ serverKey, email, orgDomain, orgId });
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
-
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    return res.status(400).json({ error: "Invalid email format" });
-  }
-  if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/i.test(orgDomain)) {
-    return res.status(400).json({ error: "Invalid orgDomain format" });
+  const accountId = identity.accountId;
+  if (identity.domainMismatch) {
+    logger.log("warn", "launch", `Launch email domain "${identity.emailDomain}" differs from orgDomain "${identity.orgDomain}" (${accountId})`);
   }
 
   // Validate agent request before acquiring lock (fail-fast)
@@ -631,7 +656,7 @@ app.post("/api/launch", requireToken, async (req, res) => {
   }
 
   // Block duplicate active sessions
-  const existingSession = sessions.getSessionByAccountId(id);
+  const existingSession = sessions.getSessionByAccountId(accountId);
   if (existingSession) {
     return res.status(409).json({
       error: "active_session_exists",
@@ -645,12 +670,18 @@ app.post("/api/launch", requireToken, async (req, res) => {
   }
 
   const launchId = virtualDesktop.generateLaunchId();
-  logger.log("info", "launch", "Starting launch", { launchId, accountId: id, serverKey, orgDomain });
-  const account = { email, serverKey, serverHost, orgDomain, orgId };
+  logger.log("info", "launch", "Starting launch", { launchId, accountId, serverKey: identity.serverKey, orgDomain });
+  const account = {
+    email: identity.email,
+    serverKey: identity.serverKey,
+    serverHost: identity.serverHost, // canonical — never the client value
+    orgDomain: identity.orgDomain,
+    orgId: identity.orgId,
+  };
   const userSettings = settings.getSettings();
   const useVD = userSettings.useVirtualDesktops;
-  const desktopName = `[${serverKey}] ${orgDomain}`;
-  const terminalTitle = `DR Launcher - ${workspace.customerSlug(serverKey, orgId, orgDomain)} - ${launchId}`;
+  const desktopName = `[${account.serverKey}] ${account.orgDomain}`;
+  const terminalTitle = `DR Launcher - ${workspace.customerSlug(account.serverKey, account.orgId, account.orgDomain)} - ${launchId}`;
 
   const result = {
     launchId,
@@ -786,7 +817,7 @@ app.post("/api/launch", requireToken, async (req, res) => {
     if (result.chrome.ok || result.terminal.ok) {
       const regResult = sessions.registerSession({
         sessionId: launchId,
-        accountId: id,
+        accountId,
         email,
         serverKey,
         orgDomain,
@@ -813,7 +844,7 @@ app.post("/api/launch", requireToken, async (req, res) => {
       }
       const historyEntry = {
         launchId,
-        accountId: id,
+        accountId,
         orgDomain,
         serverKey,
         email,
@@ -824,7 +855,7 @@ app.post("/api/launch", requireToken, async (req, res) => {
       sync.pushHistoryEntry(historyEntry);
       drCli.invalidateAccountsCache();
       artifacts.recordLaunch({
-        accountId: id,
+        accountId,
         serverKey,
         orgDomain,
         orgId: orgId || null,
@@ -842,7 +873,7 @@ app.post("/api/launch", requireToken, async (req, res) => {
 });
 
 // Switch to a named virtual desktop
-app.post("/api/switch-desktop", requireToken, async (req, res) => {
+app.post("/api/switch-desktop", requireToken, requireAuthenticated, async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: "Missing desktop name" });
   try {
@@ -854,7 +885,7 @@ app.post("/api/switch-desktop", requireToken, async (req, res) => {
 });
 
 // Start a dr login flow
-app.post("/api/login", requireToken, (req, res) => {
+app.post("/api/login", requireToken, requireAuthenticated, (req, res) => {
   try {
     const { server, accountId, email } = req.body;
     const key = drCli.validateServer(server);
@@ -877,13 +908,16 @@ app.post("/api/login", requireToken, (req, res) => {
 });
 
 // Open a workspace folder in Explorer
-app.post("/api/open-folder", requireToken, (req, res) => {
+app.post("/api/open-folder", requireToken, requireAuthenticated, (req, res) => {
   const { folderPath } = req.body;
-  if (!folderPath || !folderPath.toLowerCase().startsWith(workspace.WORKSPACE_ROOT.toLowerCase())) {
+  // realpath-based containment (defeats sibling-prefix + symlink escape) and
+  // requires the folder to exist; explorer.exe is a real exe so execFile with
+  // the path as a discrete argv entry avoids shell metacharacter parsing.
+  if (!folderPath || !isInsideRoot(folderPath, workspace.WORKSPACE_ROOT, { mustExist: true })) {
     return res.status(400).json({ error: "Invalid path" });
   }
   try {
-    exec(`explorer "${folderPath}"`);
+    execFile("explorer", [folderPath]);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -915,8 +949,12 @@ function tryListen(port, maxAttempts) {
 (async () => {
   try {
     logger.installGlobalHandlers();
-    killPreviousServer();
+    const killedPrevious = killPreviousServer();
     settings.migrateIfNeeded();
+
+    // Only wait for the OS to release the port when we actually killed a prior
+    // instance — and do it with a non-blocking timer, not a CPU busy-spin.
+    if (killedPrevious) await new Promise((r) => setTimeout(r, 1000));
 
     const { server, port } = await tryListen(3456, 3);
     serverPort = port;
@@ -928,10 +966,11 @@ function tryListen(port, maxAttempts) {
     if (IS_PACKAGED) logger.log("info", "server", `Packaged mode — install path: ${__dirname}`);
     logger.log("info", "server", "API token: [redacted]");
 
-    // Clear stale sessions from previous server runs
-    const stale = sessions.clearPreviousRunSessions();
-    if (stale.cleared > 0) {
-      logger.log("info", "server", `Cleared ${stale.cleared} stale session(s) from previous run`);
+    // Reconcile sessions persisted by a previous server run: re-adopt the ones
+    // whose Chrome/terminal are still alive, mark confirmed-dead ones ended.
+    const reconciled = await sessions.reconcilePreviousRunSessions();
+    if (reconciled.adopted > 0 || reconciled.ended > 0) {
+      logger.log("info", "server", `Reconciled previous-run sessions: ${reconciled.adopted} re-adopted, ${reconciled.ended} ended`);
     }
 
     authHealth.start();
