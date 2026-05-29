@@ -38,6 +38,7 @@ let launchErrors = [];
 let sortMode = "lastUsed";
 let lastRefreshedAt = null;
 let hiddenNonSupport = 0;
+let coverageHintDismissed = false; // session-only, mirrors prereqWarningDismissed
 let statusFilter = "all"; // "all" | "active" | "stale" | "reauth" | "idle"
 let agentCatalog = [];
 let _prevExpiredIds = null;
@@ -1464,10 +1465,18 @@ function renderSkeleton() {
 // org reachable only via a user account isn't silently lost. Renders in BOTH the
 // populated and empty-list branches.
 function coverageHintHtml() {
-  if (!(hiddenNonSupport > 0) || userSettings.showAllAccounts) return "";
+  if (!(hiddenNonSupport > 0) || userSettings.showAllAccounts || coverageHintDismissed) return "";
   const n = hiddenNonSupport;
-  return `<div style="background:#fef3c7;border:1px solid #fcd34d;color:#92400e;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px">
-      ${n} customer-user account${n === 1 ? "" : "s"} hidden (showing Datarails support accounts only). Enable <strong>Show all accounts</strong> in Settings to reveal ${n === 1 ? "it" : "them"}.
+  // Same component/markup as the prereq (Virtual Desktops) banner so the two
+  // stack identically and the hint flows up into the prereq banner's slot when
+  // that one is dismissed.
+  return `
+    <div class="prereq-banner">
+      <span class="prereq-banner__icon">${ICON.alertTriangle}</span>
+      <span class="prereq-banner__text">${n} customer-user account${n === 1 ? "" : "s"} hidden (showing Datarails support accounts only). Enable <strong>Show all accounts</strong> in Settings to reveal ${n === 1 ? "it" : "them"}.</span>
+      <span class="prereq-banner__actions">
+        <button class="st-btn st-btn--ghost st-btn--sm" id="coverage-banner-dismiss">${ICON.x} Dismiss</button>
+      </span>
     </div>`;
 }
 
@@ -1810,6 +1819,12 @@ function wirePrereqBanner(container) {
   });
   container.querySelector("#prereq-banner-dismiss")?.addEventListener("click", () => {
     prereqWarningDismissed = true;
+    render();
+  });
+  // Coverage hint (same banner component) — Dismiss hides it for the session,
+  // like the prereq banner. Revealing user accounts is a Settings-only action.
+  container.querySelector("#coverage-banner-dismiss")?.addEventListener("click", () => {
+    coverageHintDismissed = true;
     render();
   });
 }

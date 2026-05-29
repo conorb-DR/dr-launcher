@@ -1534,10 +1534,12 @@ html, body {
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
-  margin: 0 28px 12px;
+  margin: 16px 28px 12px;
+  border: 1px solid var(--st-state-stale-dot);
   border-left: 3px solid var(--st-state-stale-dot);
   border-radius: 8px;
-  background: var(--st-panel);
+  background: var(--st-state-stale-bg);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
   font-size: 13px; font-weight: 500;
   color: var(--st-ink);
 }
