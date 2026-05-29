@@ -67,6 +67,7 @@ export async function setupHarness(page, opts = {}) {
         case "/api/sessions":    return json(route, { sessions: state.sessions });
         case "/api/sessions/health": return json(route, { ok: true, sessions: state.sessions });
         case "/api/agents":      return json(route, { agents: [] });
+        case "/api/diagnostics": return json(route, { text: "DR Launcher diagnostics — e2e stub" });
         case "/api/accounts":    return json(route, computeAccounts(state));
         default: return json(route, {});
       }

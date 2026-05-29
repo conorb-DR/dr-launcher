@@ -4,6 +4,7 @@
 import { esc } from "./util.mjs";
 import { serverInfo, getServers, setServers } from "./servers.mjs";
 import { ICON } from "./icons.mjs";
+import { renderDiagnostics } from "./diagnostics.mjs";
 
 // Auth is an HttpOnly, SameSite=Strict cookie the server sets on `/`. Same-origin
 // fetch + EventSource send it automatically, so the page never handles the token.
@@ -1457,7 +1458,13 @@ function render() {
   }
 
   if (viewMode === "diagnostics") {
-    renderDiagnostics(main);
+    renderDiagnostics(main, {
+      buildHealthRows: buildSettingsHealthRows,
+      recheckHealth,
+      showToast,
+      headers,
+      goHome: () => { viewMode = "all"; render(); },
+    });
     return;
   }
 
@@ -1817,46 +1824,9 @@ function renderEmpty() {
 }
 
 // ── Diagnostics view ─────────────────────────────────────────────
-function renderDiagnostics(main) {
-  main.innerHTML = `
-    <div class="page-header">
-      <div class="page-header__breadcrumb st-mono">tools / diagnostics</div>
-      <div class="page-header__title-row">
-        <h1 class="page-header__title">Diagnostics</h1>
-        <span class="page-header__meta">System health and environment info</span>
-      </div>
-      <div class="page-header__actions">
-        <button class="st-btn st-btn--ghost" id="diag-recheck">${ICON.refresh} Re-check</button>
-        <button class="st-btn st-btn--primary" id="diag-copy">${ICON.copy} Copy support bundle</button>
-      </div>
-    </div>
-    <div class="diag-grid">
-      <div class="diag-card">
-        <div class="diag-card__head"><span class="diag-card__title">System health</span></div>
-        <div class="diag-card__body">${buildSettingsHealthRows()}</div>
-      </div>
-    </div>
-  `;
-
-  main.querySelector("#diag-recheck")?.addEventListener("click", async () => {
-    await recheckHealth();
-    renderDiagnostics(main);
-    showToast("Health check complete.");
-  });
-  main.querySelector("#diag-copy")?.addEventListener("click", async () => {
-    try {
-      const res = await fetch("/api/diagnostics", { headers });
-      const data = await res.json();
-      await navigator.clipboard.writeText(data.text || "No diagnostics available");
-      showToast("Support bundle copied to clipboard.");
-    } catch (err) {
-      showToast("Failed to copy diagnostics: " + err.message, "error");
-    }
-  });
-  main.querySelector(".crumb-home")?.addEventListener("click", (e) => {
-    e.preventDefault(); viewMode = "all"; render();
-  });
-}
+// renderDiagnostics() moved to ./diagnostics.mjs (imported above); render()
+// invokes it with an injected ctx (buildHealthRows / recheckHealth / showToast
+// / headers / goHome).
 
 // ── Dropdown menus ──────────────────────────────────────────────
 function showDropdown(anchorEl, items, evt) {
