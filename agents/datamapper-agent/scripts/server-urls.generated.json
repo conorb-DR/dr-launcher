@@ -1,0 +1,10 @@
+{
+  "US": "https://app.datarails.com",
+  "US2": "https://us-2.datarails.com",
+  "UK": "https://ukapp.datarails.com",
+  "CA": "https://caapp.datarails.com",
+  "DEV": "https://dev.datarails.com",
+  "DEV-1": "https://dev-1.datarails.com",
+  "TEST": "https://testapp.datarails.com",
+  "DEMO": "https://demoapp.datarails.com"
+}

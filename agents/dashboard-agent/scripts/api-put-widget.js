@@ -24,16 +24,9 @@ const path = require('path');
 const https = require('https');
 const os = require('os');
 
-const SERVER_URLS = {
-  US: 'https://app.datarails.com',
-  US2: 'https://us-2.datarails.com',
-  UK: 'https://ukapp.datarails.com',
-  CA: 'https://caapp.datarails.com',
-  DEV: 'https://dev.datarails.com',
-  'DEV-1': 'https://dev-1.datarails.com',
-  TEST: 'https://testapp.datarails.com',
-  DEMO: 'https://demoapp.datarails.com',
-};
+// Generated from lib/servers.js BUNDLED_DEFAULTS — `npm run gen:server-maps`.
+// Do not hand-edit; `npm run check:server-maps` fails the gate on drift.
+const SERVER_URLS = require('./server-urls.generated.json');
 
 const DR_CLI_KEYCHAIN_SERVICE = 'dr-cli';
 const DR_CLI_PATH = path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'node_modules', 'dr-cli');
