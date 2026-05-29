@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    # windows-latest matches the Windows-only tool and avoids cross-platform
+    # unit-test surprises (path-safety, run-command, dr shim).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22" # >=21 so `node --test <glob>` expands without a shell
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Server-map parity
+        run: npm run check:server-maps
+
+      - name: Agent-path lint
+        run: npm run lint:paths
+
+      - name: Frontend module syntax
+        run: npm run check:frontend
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+
+      - name: Frontend smoke (Playwright)
+        run: npm run test:e2e
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
