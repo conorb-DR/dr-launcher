@@ -6,7 +6,7 @@ import { serverInfo, getServers, setServers } from "./servers.mjs";
 import { ICON } from "./icons.mjs";
 import { renderDiagnostics } from "./diagnostics.mjs";
 import { renderCliTools } from "./cli-tools.mjs";
-import { wireCleanup } from "./cleanup.mjs";
+import { showSettingsModal } from "./settings.mjs";
 
 // Auth is an HttpOnly, SameSite=Strict cookie the server sets on `/`. Same-origin
 // fetch + EventSource send it automatically, so the page never handles the token.
@@ -1030,7 +1030,7 @@ function renderTopbar() {
   updateUserUI();
 
   el.querySelector("#btn-refresh")?.addEventListener("click", () => fetchAccounts(true));
-  el.querySelector("#btn-settings")?.addEventListener("click", showSettingsModal);
+  el.querySelector("#btn-settings")?.addEventListener("click", openSettings);
   el.querySelector("#btn-help")?.addEventListener("click", showHelpModal);
   el.querySelector("#user-pill")?.addEventListener("click", () => {
     if (authState.authenticated) {
@@ -1152,7 +1152,7 @@ function renderSidebar() {
   el.querySelectorAll("[data-nav]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const key = btn.dataset.nav;
-      if (key === "settings") { showSettingsModal(); return; }
+      if (key === "settings") { openSettings(); return; }
       if (key.startsWith("srv-")) {
         const sk = key.slice(4);
         filterServer = filterServer === sk ? null : sk;
@@ -2101,44 +2101,6 @@ function wireCliReference(main) {
   });
 }
 
-function runCliInstall(statusEl, btn) {
-  btn.disabled = true;
-  btn.textContent = "Installing…";
-  statusEl.textContent = "Starting…";
-  statusEl.style.color = "var(--st-ink-muted)";
-  const es = new EventSource("/api/cli/install");
-  let output = "";
-  es.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
-    if (msg.type === "stdout" || msg.type === "stderr") {
-      output += msg.data;
-      statusEl.textContent = msg.data.trim().split("\n").pop();
-    } else if (msg.type === "done") {
-      statusEl.textContent = "Installed";
-      statusEl.style.color = "var(--st-state-active-fg)";
-      btn.textContent = "Update DR CLI";
-      btn.disabled = false;
-      es.close();
-      showToast("DR CLI installed/updated successfully.");
-      recheckHealth().then(() => render());
-    } else if (msg.type === "error") {
-      statusEl.textContent = "Failed";
-      statusEl.style.color = "var(--st-state-failed-fg)";
-      btn.textContent = "Retry";
-      btn.disabled = false;
-      es.close();
-      showToast("DR CLI install failed: " + msg.data, "error");
-    }
-  };
-  es.onerror = () => {
-    statusEl.textContent = "Connection lost";
-    statusEl.style.color = "var(--st-state-failed-fg)";
-    btn.textContent = "Retry";
-    btn.disabled = false;
-    es.close();
-  };
-}
-
 function buildSettingsHealthRows() {
   if (!healthChecks) return `<div class="settings-row"><div class="settings-row__main" style="font-size:12px;color:var(--st-ink-muted)">Health data not available. Click "Run health check" to refresh.</div></div>`;
   const drFound = healthChecks.dr?.found;
@@ -2159,215 +2121,21 @@ function buildSettingsHealthRows() {
     </div>`).join("");
 }
 
-function showSettingsModal() {
-  const vdOn = userSettings.useVirtualDesktops;
-  const showAllOn = userSettings.showAllAccounts === true;
-  const vdDisabled = vdAvailable === false;
-  const currentTheme = document.documentElement.getAttribute("data-theme") || "warm";
-  const overlay = document.createElement("div");
-  overlay.className = "modal-overlay";
-  overlay.innerHTML = `
-    <div class="modal" style="width:520px">
-      <div class="modal__head">
-        <div>
-          <h2>Settings</h2>
-          <p>Preferences sync across your devices. Advanced launch settings stay on this machine.</p>
-        </div>
-        <button class="modal__close" aria-label="Close">${ICON.x}</button>
-      </div>
-      <div class="modal__body">
-        <div class="settings-group">
-          <div>
-            <div class="settings-group__title">Appearance</div>
-            <div class="settings-card">
-              <div class="settings-row">
-                <div class="settings-row__main">
-                  <div class="settings-row__label">Theme</div>
-                  <div class="settings-row__hint">Choose your preferred palette</div>
-                </div>
-                <div class="palette-picker">
-                  ${["warm", "zinc", "dark", "cream"].map((t) => `
-                    <button class="palette-swatch${t === currentTheme ? " is-active" : ""}" data-palette="${t}" title="${t}">
-                      <span class="palette-swatch__stripe" style="background:${t === "warm" ? "#FAFAF9" : t === "zinc" ? "#F8FAFC" : t === "dark" ? "#16181D" : "#F4EEE0"}"></span>
-                      <span class="palette-swatch__stripe" style="background:${t === "warm" ? "#0A0A0B" : t === "zinc" ? "#0F172A" : t === "dark" ? "#ECEEF4" : "#1A1714"}"></span>
-                      <span class="palette-swatch__stripe" style="background:#4646CE"></span>
-                    </button>
-                  `).join("")}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <div class="settings-group__title">Launch behavior</div>
-            <div class="settings-card">
-              <div class="settings-row">
-                <div class="settings-row__main">
-                  <div class="settings-row__label">Virtual desktops <span class="beta-badge">Beta</span></div>
-                  <div class="settings-row__hint">${vdDisabled
-                    ? `Virtual desktop support is not available on this system.`
-                    : `Each launch creates a separate Windows virtual desktop. Existing desktops are reused.`
-                  }</div>
-                </div>
-                <button class="toggle ${vdOn ? "is-on" : ""} ${vdDisabled ? "is-disabled" : ""}" id="set-vd" ${vdDisabled ? "disabled" : ""}></button>
-              </div>
-              <div class="settings-row">
-                <div class="settings-row__main">
-                  <div class="settings-row__label">Show all accounts <span class="beta-badge">Advanced</span></div>
-                  <div class="settings-row__hint">Reveal customer-user accounts, not just Datarails support accounts. Launching as a customer user runs with that user's permissions and audit identity — use only to reproduce a user-specific issue. Stays on this machine.</div>
-                </div>
-                <button class="toggle ${showAllOn ? "is-on" : ""}" id="set-show-all-accounts"></button>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <div class="settings-group__title">System health</div>
-            <div class="settings-card" id="settings-health-card">
-              ${buildSettingsHealthRows()}
-              <div style="padding:8px 16px 12px;text-align:right">
-                <button class="st-btn st-btn--sm" id="settings-health-recheck">${ICON.refresh} Run health check</button>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <div class="settings-group__title">Cloud sync</div>
-            <div class="settings-card">
-              <div class="settings-row">
-                <div class="settings-row__main">
-                  <div class="settings-row__hint" id="sync-status-text">${
-                    syncStatus.lastSyncedAt
-                      ? `Last synced: ${new Date(syncStatus.lastSyncedAt).toLocaleString()}${syncStatus.dirty ? " (local changes pending)" : ""}`
-                      : "Not yet synced"
-                  }${syncStatus.error ? ` — Error: ${esc(syncStatus.error)}` : ""}</div>
-                </div>
-                <button class="st-btn st-btn--sm" id="settings-sync-btn">${ICON.refresh} Sync now</button>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <div class="settings-group__title">Storage</div>
-            <div class="settings-card">
-              <div class="settings-row">
-                <div class="settings-row__main">
-                  <div class="settings-row__label">Cleanup unused data</div>
-                  <div class="settings-row__hint">Scan for orphaned Chrome profiles and workspaces from old launches</div>
-                </div>
-                <button class="st-btn st-btn--sm" id="settings-cleanup-scan">Scan</button>
-              </div>
-              <div id="cleanup-results" style="display:none"></div>
-            </div>
-          </div>
-
-          <div>
-            <div class="settings-group__title">About</div>
-            <div class="settings-card">
-              <div class="settings-row">
-                <div class="settings-row__main" style="font-size:12px;color:var(--st-ink-muted);line-height:1.6">
-                  <div>DR Launcher — local-first customer launcher</div>
-                  <div>Auth: HttpOnly session cookie (token not exposed to the page)</div>
-                </div>
-                <button class="st-btn st-btn--sm" id="settings-copy-diag">Copy diagnostics</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="modal__foot">
-        <span></span>
-        <button class="st-btn st-btn--primary" data-modal-close>Done</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-
-  // Palette switching
-  overlay.querySelectorAll("[data-palette]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      overlay.querySelectorAll(".palette-swatch").forEach((s) => s.classList.remove("is-active"));
-      btn.classList.add("is-active");
-      applyTheme(btn.dataset.palette);
-      saveSettingsQuiet({ theme: btn.dataset.palette });
-    });
+// showSettingsModal() moved to ./settings.mjs (imported above). openSettings()
+// is the single composition-root entry (topbar gear + sidebar nav both use it):
+// it builds the injected ctx. buildSettingsHealthRows() stays here (shared with
+// the diagnostics view) and is passed in as buildHealthRows.
+function openSettings() {
+  showSettingsModal({
+    getSettings: () => userSettings,
+    getSyncStatus: () => syncStatus,
+    getVdAvailable: () => vdAvailable,
+    applyTheme, saveSettings, saveSettingsQuiet,
+    fetchAccounts, render, showToast,
+    triggerSync, fetchSyncStatus, recheckHealth,
+    buildHealthRows: buildSettingsHealthRows,
+    headers, wireModalClose,
   });
-
-  const tog = overlay.querySelector("#set-vd");
-  if (tog && !vdDisabled) {
-    tog.addEventListener("click", () => {
-      const on = !tog.classList.contains("is-on");
-      tog.classList.toggle("is-on", on);
-      saveSettings({ useVirtualDesktops: on });
-      showToast(on ? "Virtual desktops enabled." : "Virtual desktops disabled.");
-    });
-  }
-  const showAllTog = overlay.querySelector("#set-show-all-accounts");
-  if (showAllTog) {
-    showAllTog.addEventListener("click", async () => {
-      const on = !showAllTog.classList.contains("is-on");
-      showAllTog.classList.toggle("is-on", on);
-      await saveSettings({ showAllAccounts: on });
-      await fetchAccounts(true); // re-filter; fetchAccounts also prunes stale selections
-      render();
-      showToast(on ? "Showing all accounts (incl. customer users)." : "Showing support accounts only.");
-    });
-  }
-  const syncBtn = overlay.querySelector("#settings-sync-btn");
-  if (syncBtn) {
-    syncBtn.addEventListener("click", async () => {
-      syncBtn.disabled = true;
-      syncBtn.textContent = "Syncing…";
-      await triggerSync();
-      await fetchSyncStatus();
-      const statusEl = overlay.querySelector("#sync-status-text");
-      if (statusEl) {
-        statusEl.textContent = syncStatus.lastSyncedAt
-          ? `Last synced: ${new Date(syncStatus.lastSyncedAt).toLocaleString()}${syncStatus.dirty ? " (local changes pending)" : ""}`
-          : "Not yet synced";
-      }
-      syncBtn.disabled = false;
-      syncBtn.innerHTML = `${ICON.refresh} Sync now`;
-    });
-  }
-  const diagBtn = overlay.querySelector("#settings-copy-diag");
-  if (diagBtn) {
-    diagBtn.addEventListener("click", async () => {
-      diagBtn.disabled = true;
-      diagBtn.textContent = "Copying…";
-      try {
-        const res = await fetch("/api/diagnostics", { headers });
-        const data = await res.json();
-        await navigator.clipboard.writeText(data.text || "No diagnostics available");
-        showToast("Diagnostics copied to clipboard.");
-      } catch (err) {
-        showToast("Failed to copy diagnostics: " + err.message, "error");
-      }
-      diagBtn.disabled = false;
-      diagBtn.textContent = "Copy diagnostics";
-    });
-  }
-  overlay.addEventListener("click", async (e) => {
-    const recheckBtn = e.target.closest("#settings-health-recheck");
-    if (recheckBtn) {
-      recheckBtn.disabled = true;
-      recheckBtn.textContent = "Checking…";
-      await recheckHealth();
-      const card = overlay.querySelector("#settings-health-card");
-      if (card) {
-        card.innerHTML = buildSettingsHealthRows()
-          + `<div style="padding:8px 16px 12px;text-align:right"><button class="st-btn st-btn--sm" id="settings-health-recheck">${ICON.refresh} Run health check</button></div>`;
-      }
-      showToast("Health check complete.");
-      return;
-    }
-    const installBtn = e.target.closest("#settings-cli-install");
-    if (installBtn) {
-      const statusEl = overlay.querySelector("#cli-install-status");
-      if (statusEl) runCliInstall(statusEl, installBtn);
-    }
-  });
-  wireCleanup(overlay, { headers, showToast });
-  wireModalClose(overlay);
 }
 
 function showAgentPickerDropdown(anchorEl, accountsList, evt) {

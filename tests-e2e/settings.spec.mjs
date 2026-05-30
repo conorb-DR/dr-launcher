@@ -104,4 +104,20 @@ test.describe("settings modal", () => {
       page.locator("#toasts .toast__body").filter({ hasText: "Health check complete" })
     ).toBeVisible();
   });
+
+  test("install DR CLI from the health card streams status + toasts", async ({ page }) => {
+    await setupHarness(page);
+    await page.goto("/");
+    await openSettings(page);
+
+    // The dr-CLI health row carries an Install/Update button + status span.
+    await page.locator("#settings-cli-install").click();
+    await expect(page.locator("#cli-install-status")).toContainText("Starting");
+
+    await page.evaluate(() => window.__emitES("/api/cli/install", { type: "done", data: "ok" }));
+    await expect(page.locator("#cli-install-status")).toContainText("Installed");
+    await expect(
+      page.locator("#toasts .toast__body").filter({ hasText: "DR CLI installed/updated successfully" })
+    ).toBeVisible();
+  });
 });
