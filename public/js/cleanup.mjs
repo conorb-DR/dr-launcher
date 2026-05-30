@@ -89,8 +89,11 @@ export function wireCleanup(overlay, ctx) {
       }
     } catch (err) {
       ctx.showToast("Scan failed: " + err.message, "error");
+    } finally {
+      // Always restore the button — the early returns above (no orphaned data,
+      // missing results container) must not leave it stuck on "Scanning…".
+      cleanupBtn.disabled = false;
+      cleanupBtn.textContent = "Scan";
     }
-    cleanupBtn.disabled = false;
-    cleanupBtn.textContent = "Scan";
   });
 }
