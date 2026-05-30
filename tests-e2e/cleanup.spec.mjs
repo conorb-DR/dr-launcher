@@ -24,4 +24,21 @@ test.describe("cleanup (settings)", () => {
       page.locator("#toasts .toast__body").filter({ hasText: "Deleted 1 profile" })
     ).toBeVisible();
   });
+
+  test("empty scan re-enables the Scan button (regression)", async ({ page }) => {
+    await setupHarness(page);
+    // Scan finds nothing → the handler's early return must still re-enable the
+    // button (a finally), otherwise it stays stuck on "Scanning…".
+    await page.route("**/api/cleanup/scan", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ profiles: [], workspaces: [] }) })
+    );
+    await page.goto("/");
+    await page.locator("#btn-settings").click();
+
+    const scanBtn = page.locator("#settings-cleanup-scan");
+    await scanBtn.click();
+    await expect(page.locator("#cleanup-results")).toContainText("No orphaned data found");
+    await expect(scanBtn).toBeEnabled();
+    await expect(scanBtn).toHaveText("Scan");
+  });
 });
